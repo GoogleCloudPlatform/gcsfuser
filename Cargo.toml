@@ -1,0 +1,19 @@
+[package]
+name = "rust-gcs"
+version = "0.1.0"
+authors = ["Solomon Boulos <boulos@google.com>"]
+
+description = "A library for accessing Google Cloud Storage via its JSON API."
+license = "Apache-2.0"
+
+[dependencies]
+#boringssl = "*"
+hyper = "*"
+oauth2 = "*"
+openssl = "*"
+reqwest = "*"
+serde = "*"
+serde_derive = "*"
+serde_json = "*"
+serde_with = "*"
+url = "*"
