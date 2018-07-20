@@ -27,6 +27,14 @@ pub struct Object {
     size: u64,
 }
 
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ListObjectsResponse {
+    next_page_token: Option<String>,
+    items: Vec<Object>,
+}
+
 fn new_client() -> Result<reqwest::Client, reqwest::Error> {
     // NOTE(boulos): The service account needs both storage viewer (to see objects) and *project* viewer to see the Bucket.
     let creds = Bearer {
@@ -93,6 +101,54 @@ fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwes
     Ok(buf)
 }
 
+fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, token: Option<&str>) -> Result<ListObjectsResponse, reqwest::Error> {
+    let mut list_url = Url::parse(bucket).unwrap();
+    if let Some(prefix_str) = prefix {
+        list_url.query_pairs_mut().append_pair("prefix", prefix_str);
+    }
+
+    if let Some(delim_str) = delim {
+        list_url.query_pairs_mut().append_pair("delimiter", delim_str);
+    }
+
+    if let Some(token_str) = token {
+        list_url.query_pairs_mut().append_pair("pageToken", token_str);
+    }
+
+    let client = new_client()?;
+
+    let mut response = client.get(list_url)
+        .send()
+        .expect("Failed to send request");
+
+    let list_response = response.json::<ListObjectsResponse>();
+    return list_response;
+}
+
+fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> Result<Vec<Object>, reqwest::Error> {
+    println!("Asking for a list from bucket '{}' with prefix '{:#?}' and delim = '{:#?}'", bucket, prefix, delim);
+
+    let mut results: Vec<Object> = vec![];
+
+    let mut page_token: String = String::from("");
+
+    loop {
+        let mut resp = match page_token.is_empty() {
+            true => _do_one_list_object(bucket, prefix, delim, None)?,
+            false => _do_one_list_object(bucket, prefix, delim, Some(&page_token))?,
+        };
+
+        results.append(&mut resp.items);
+
+        match resp.next_page_token {
+            Some(temp_token_str) => page_token = temp_token_str.clone(),
+            None => break,
+        }
+    }
+
+    Ok(results)
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -128,5 +184,34 @@ mod tests {
         let offset_bytes: Vec<u8> = get_bytes(&object, 6, 769).unwrap();
         println!("Got back:\n {}", String::from_utf8(offset_bytes).unwrap());
 
+    }
+
+    #[test]
+    fn test_list_objects() {
+        let object_url = "https://www.googleapis.com/storage/v1/b/boulos-hadoop/o";
+        let prefix = "bdutil-staging";
+        let delim = "%2F";
+
+        let objects: Vec<Object> = list_objects(object_url, Some(prefix), Some(delim)).unwrap();
+        println!("Got {} objects", objects.len());
+        println!("Dump:\n\n{:#?}", objects);
+
+        let all_objects: Vec<Object> = list_objects(object_url, None, None).unwrap();
+        println!("Got {} objects", all_objects.len());
+        println!("Dump:\n\n{:#?}", all_objects);
+
+        let only_top_level: Vec<Object> = list_objects(object_url, None, Some(delim)).unwrap();
+        println!("Got {} objects", only_top_level.len());
+        println!("Dump:\n\n{:#?}", only_top_level);
+    }
+
+    #[test]
+    fn test_list_paginated() {
+        let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
+        let prefix = "LC08/PRE/044/034/";
+        let delim = "%2F";
+
+        let objects: Vec<Object> = list_objects(object_url, Some(prefix), Some(delim)).unwrap();
+        println!("Got {} objects", objects.len());
     }
 }
