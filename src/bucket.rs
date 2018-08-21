@@ -81,7 +81,7 @@ fn get_object(url: Url) -> Result<Object, reqwest::Error> {
     return object
 }
 
-fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
+pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
     println!("Asking for {} bytes at {} from the origin for {}", how_many, offset, obj.name);
 
     // Use the self_link from the object as the url, but add ?alt=media
