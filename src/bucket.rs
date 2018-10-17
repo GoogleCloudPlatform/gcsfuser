@@ -4,7 +4,6 @@ extern crate serde_json;
 extern crate serde_with;
 extern crate url;
 
-use reqwest::header::{Authorization, Bearer, Range};
 use url::Url;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -35,17 +34,15 @@ pub struct ListObjectsResponse {
     items: Vec<Object>,
 }
 
+// NOTE(boulos): The service account needs both storage viewer (to see objects) and *project* viewer to see the Bucket.
+static GCLOUD_TOKEN: &'static str = "IMABADPERSON_HARDCODED_HERE_gcloud_auth_print_access_token_for_the_service_account";
+
+
 fn new_client() -> Result<reqwest::Client, reqwest::Error> {
-    // NOTE(boulos): The service account needs both storage viewer (to see objects) and *project* viewer to see the Bucket.
-    let creds = Bearer {
-        token: "IMABADPERSON_HARDCODED_HERE_gcloud_auth_print_access_token_for_the_service_account".to_owned()
-    };
-
-    let mut headers = reqwest::header::Headers::new();
-    headers.set(Authorization(creds));
-
+    // NOTE(boulos): Previously, I was passing some default headers
+    // here. Now that bearer_auth is per request, this is less needed,
+    // but we can change that later.
     return reqwest::Client::builder()
-        .default_headers(headers)
         .build();
 }
 
@@ -55,6 +52,7 @@ fn get_bucket(url: Url) -> Result<Bucket, reqwest::Error> {
     let client = new_client()?;
 
     let mut response = client.get(url)
+        .bearer_auth(GCLOUD_TOKEN)
         .send()
         .expect("Failed to send request");
 
@@ -71,6 +69,7 @@ fn get_object(url: Url) -> Result<Object, reqwest::Error> {
     let client = new_client()?;
 
     let mut response = client.get(url)
+        .bearer_auth(GCLOUD_TOKEN)
         .send()
         .expect("Failed to send request");
 
@@ -90,8 +89,11 @@ pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, re
 
     let client = new_client()?;
 
+    let byte_range = format!("bytes={}-{}", offset, offset + how_many);
+
     let mut response = client.get(object_url)
-        .header(Range::bytes(offset, offset + how_many))
+        .header(reqwest::header::RANGE, byte_range)
+        .bearer_auth(GCLOUD_TOKEN)
         .send()
         .expect("Failed to send request");
 
@@ -118,6 +120,7 @@ fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, 
     let client = new_client()?;
 
     let mut response = client.get(list_url)
+        .bearer_auth(GCLOUD_TOKEN)
         .send()
         .expect("Failed to send request");
 
