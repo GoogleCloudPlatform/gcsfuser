@@ -10,8 +10,8 @@ use url::Url;
 #[serde(rename_all = "camelCase")]
 pub struct Bucket {
     id: String,
-    name: String,
-    location: String,
+    pub name: String,
+    pub location: String,
     self_link: String,
 }
 
@@ -19,11 +19,11 @@ pub struct Bucket {
 #[serde(rename_all = "camelCase")]
 pub struct Object {
     id: String,
-    name: String,
-    bucket: String,
+    pub name: String,
+    pub bucket: String,
     self_link: String,
     #[serde(with = "serde_with::rust::display_fromstr")]
-    size: u64,
+    pub size: u64,
 }
 
 
@@ -31,6 +31,7 @@ pub struct Object {
 #[serde(rename_all = "camelCase")]
 pub struct ListObjectsResponse {
     next_page_token: Option<String>,
+    prefixes: Option<Vec<String>>,
     items: Vec<Object>,
 }
 
@@ -81,7 +82,7 @@ fn get_object(url: Url) -> Result<Object, reqwest::Error> {
 }
 
 pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
-    println!("Asking for {} bytes at {} from the origin for {}", how_many, offset, obj.name);
+    println!("Asking for {} bytes at {} from the origin for {} (self link = {}", how_many, offset, obj.name, obj.self_link);
 
     // Use the self_link from the object as the url, but add ?alt=media
     let mut object_url = Url::parse(&obj.self_link).unwrap();
@@ -128,10 +129,11 @@ fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, 
     return list_response;
 }
 
-fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> Result<Vec<Object>, reqwest::Error> {
+pub fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> Result<(Vec<Object>, Vec<String>), reqwest::Error> {
     println!("Asking for a list from bucket '{}' with prefix '{:#?}' and delim = '{:#?}'", bucket, prefix, delim);
 
-    let mut results: Vec<Object> = vec![];
+    let mut objects: Vec<Object> = vec![];
+    let mut prefixes: Vec<String> = vec![];
 
     let mut page_token: String = String::from("");
 
@@ -141,7 +143,10 @@ fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> Resu
             false => _do_one_list_object(bucket, prefix, delim, Some(&page_token))?,
         };
 
-        results.append(&mut resp.items);
+        objects.append(&mut resp.items);
+        if resp.prefixes.is_some() {
+            prefixes.append(&mut resp.prefixes.unwrap());
+        }
 
         match resp.next_page_token {
             Some(temp_token_str) => page_token = temp_token_str.clone(),
@@ -149,7 +154,7 @@ fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> Resu
         }
     }
 
-    Ok(results)
+    Ok((objects, prefixes))
 }
 
 
@@ -186,8 +191,23 @@ mod tests {
 
         let offset_bytes: Vec<u8> = get_bytes(&object, 6, 769).unwrap();
         println!("Got back:\n {}", String::from_utf8(offset_bytes).unwrap());
-
     }
+
+    #[test]
+    fn get_public_object() {
+        let object_url = Url::parse(
+            "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2FPRE%2F044%2F034%2FLC80440342017101LGN00%2FLC80440342017101LGN00_MTL.txt"
+        ).unwrap();
+        let object: Object = get_object(object_url).unwrap();
+        println!("Object has {} bytes", object.size);
+
+        let bytes: Vec<u8> = get_bytes(&object, 0, 4096).unwrap();
+        println!("Got back:\n {}", String::from_utf8(bytes).unwrap());
+
+        let offset_bytes: Vec<u8> = get_bytes(&object, 4099, 1024).unwrap();
+        println!("Got back:\n {}", String::from_utf8(offset_bytes).unwrap());
+    }
+
 
     #[test]
     fn test_list_objects() {
@@ -195,17 +215,18 @@ mod tests {
         let prefix = "bdutil-staging";
         let delim = "%2F";
 
-        let objects: Vec<Object> = list_objects(object_url, Some(prefix), Some(delim)).unwrap();
+        let (objects, _) = list_objects(object_url, Some(prefix), Some(delim)).unwrap();
         println!("Got {} objects", objects.len());
         println!("Dump:\n\n{:#?}", objects);
 
-        let all_objects: Vec<Object> = list_objects(object_url, None, None).unwrap();
+        let (all_objects, _) = list_objects(object_url, None, None).unwrap();
         println!("Got {} objects", all_objects.len());
         println!("Dump:\n\n{:#?}", all_objects);
 
-        let only_top_level: Vec<Object> = list_objects(object_url, None, Some(delim)).unwrap();
+        let (only_top_level, prefixes) = list_objects(object_url, None, Some(delim)).unwrap();
         println!("Got {} objects", only_top_level.len());
         println!("Dump:\n\n{:#?}", only_top_level);
+        println!("Prefixes:\n\n{:#?}", prefixes);
     }
 
     #[test]
@@ -214,7 +235,9 @@ mod tests {
         let prefix = "LC08/PRE/044/034/";
         let delim = "%2F";
 
-        let objects: Vec<Object> = list_objects(object_url, Some(prefix), Some(delim)).unwrap();
+        let (objects, prefixes) = list_objects(object_url, Some(prefix), Some(delim)).unwrap();
         println!("Got {} objects", objects.len());
+        println!("prefixes: {:#?}", prefixes);
+        println!("objects: {:#?}", objects)
     }
 }

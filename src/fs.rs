@@ -3,10 +3,11 @@ use fuse::FUSE_ROOT_ID;
 use libc::{ENOENT};
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::fs;
 use time::Timespec;
 
 use super::Object;
-
+use bucket::list_objects;
 
 pub type Inode = u64;
 
@@ -49,32 +50,132 @@ impl GCSFS {
             inode_counter: 0,
         }
     }
-}
 
-impl Filesystem for GCSFS {
-    fn init(&mut self, _req: &Request) -> Result<(), i32> {
-        info!("init!");
-        debug!("debug_logger: init!");
-        let root_time: Timespec = Timespec { sec: 1534812086, nsec: 0 };    // 2018-08-20 15:41 Pacific
+    fn get_inode(&mut self) -> Inode {
+        // Grab an inode. We pre-increment so that the root inode gets 1.
+        self.inode_counter += 1;
+        return self.inode_counter;
+    }
 
-        let root_inode: FileAttr = FileAttr {
-            ino: 1,
-            size: 0,
-            blocks: 0,
-            atime: root_time,
-            mtime: root_time,
-            ctime: root_time,
-            crtime: root_time,
-            kind: FileType::Directory,
+    fn load_file(&mut self, full_path: String, obj: Object) -> Inode {
+        let inode = self.get_inode();
+
+        println!("   GCSFS. Loading {}", full_path);
+
+        let file_time: Timespec = Timespec { sec: 1534812086, nsec: 0 };    // 2018-08-20 15:41 Pacific
+
+        let file_attr: FileAttr = FileAttr {
+            ino: inode,
+            size: obj.size,
+            blocks: 0 /* do I need this? */,
+            atime: file_time,
+            mtime: file_time,
+            ctime: file_time,
+            crtime: file_time,
+            kind: FileType::RegularFile,
             perm: 0o755,
-            nlink: 2,
+            nlink: 1,
             uid: 501,
             gid: 20,
             rdev: 0,
             flags: 0,
         };
 
-        self.inode_to_attr.insert(1, root_inode);
+        self.inode_to_attr.insert(inode, file_attr);
+        self.inode_to_obj.insert(inode, obj);
+        self.inode_map.insert(full_path, inode);
+
+        return inode;
+    }
+
+    // Given a bucket, and a prefix (the directory), load it
+    fn load_dir(&mut self, bucket_url: &str, prefix: Option<&str>, parent: Option<Inode>) -> Inode {
+        let dir_inode = self.get_inode();
+
+        let prefix_for_load = match prefix {
+            Some(prefix_str) => prefix_str,
+            None => "",
+        };
+
+        println!("   GCSFS. DIR {}", prefix_for_load);
+
+        // Always use %2F aka '/' for delim.
+        let (single_level_objs, subdirs) = list_objects(bucket_url, prefix, Some("%2F")).unwrap();
+
+        let dir_time: Timespec = Timespec { sec: 1534812086, nsec: 0 };    // 2018-08-20 15:41 Pacific
+
+        let dir_attr: FileAttr = FileAttr {
+            ino: dir_inode,
+            size: 0,
+            blocks: 0,
+            atime: dir_time,
+            mtime: dir_time,
+            ctime: dir_time,
+            crtime: dir_time,
+            kind: FileType::Directory,
+            perm: 0o755,
+            nlink: (single_level_objs.len() + 2) as u32,
+            uid: 501,
+            gid: 20,
+            rdev: 0,
+            flags: 0,
+        };
+
+        self.inode_to_attr.insert(dir_inode, dir_attr);
+
+        let parent_inode = match parent {
+            Some(parent_val) => parent_val,
+            None => dir_inode,
+        };
+
+        let mut dir_entries: Vec<(String, Inode)> = vec![
+            (String::from("."), dir_inode), /* self link */
+            (String::from(".."), parent_inode),
+        ];
+
+        // obj.name returns paths relative to the root of the
+        // bucket. Strip off the prefix to get the "filename".
+        let base_dir_index = prefix_for_load.len();
+
+        // TODO(boulos): Recursively load_dir on the prefixes, and get their inodes
+
+        // Loop over all the direct objects, adding them to our maps
+        for obj in single_level_objs {
+            // Extract just the portion that is the "file name".
+            let file_str = obj.name[base_dir_index..].to_string();
+            let full_path = format!("{}{}", prefix_for_load, file_str);
+
+            let inode = self.load_file(full_path, obj);
+
+            dir_entries.push((file_str, inode));
+        }
+
+        println!("  Created dir_entries: {:#?}", dir_entries);
+
+        self.directory_map.insert(dir_inode, PsuedoDir {
+            name: prefix_for_load.to_string(),
+            entries: dir_entries,
+        });
+
+        return dir_inode
+    }
+
+}
+
+impl Filesystem for GCSFS {
+
+    fn init(&mut self, _req: &Request) -> Result<(), i32> {
+        info!("init!");
+        debug!("debug_logger: init!");
+
+
+        let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
+        let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
+
+        // Trigger a load from the root of the bucket
+        let root_inode = self.load_dir(object_url, Some(prefix), None);
+        self.inode_map.insert(".".to_string(), root_inode);
+
         Ok(())
     }
 
@@ -85,9 +186,11 @@ impl Filesystem for GCSFS {
             // TODO(boulos): Is this the full name, or just the portion? (I believe just portion)
             let search_name = name.to_str().unwrap().to_string();
             for child_pair in dir_ent.entries.iter() {
+                debug!("  Is search target '{}' == dir_entry '{}'?", search_name, child_pair.0);
                 if child_pair.0 == search_name {
                     if let Some(attr) = self.inode_to_attr.get(&child_pair.1) {
                         // Found it! Return the info for the inode.
+                        debug!("  Found it! search target '{}' is inode {}", child_pair.0, child_pair.1);
                         reply.entry(&TTL_30s, &attr, 0);
                         return;
                     }
@@ -111,19 +214,28 @@ impl Filesystem for GCSFS {
     fn read(&mut self, _req: &Request, inode: Inode, _fh: u64, offset: i64, _size: u32, reply: ReplyData) {
         info!("Trying to read() {} on {} at offset {}", _size, inode, offset);
         if let Some(obj) = self.inode_to_obj.get(&inode) {
-            reply.data(super::bucket::get_bytes(obj, offset as u64, _size as u64).unwrap_or(vec![]).as_slice());
+            debug!("  Performing read for obj: {:#?}", obj);
+            let bytes = super::bucket::get_bytes(obj, offset as u64, _size as u64).unwrap_or(vec![]);
+            reply.data(bytes.as_slice());
         } else {
             reply.error(ENOENT);
         }
     }
 
     fn readdir(&mut self, _req: &Request, inode: Inode, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
-        info!("Trying to readdir on {}", inode);
+        info!("Trying to readdir on {} with offset {}", inode, offset);
         if let Some(dir_ent) = self.directory_map.get(&inode) {
+            debug!("  directory {} has {} entries ({:#?})", inode, dir_ent.entries.len(), dir_ent.entries);
+            let mut absolute_index = offset + 1;
             for (idx, ref child_pair) in dir_ent.entries.iter().skip(offset as usize).enumerate() {
+                debug!("    looking at entry {}, got back pair {:#?}", idx, child_pair);
+
                 if let Some(child_ent) = self.inode_to_attr.get(&child_pair.1) {
-                    reply.add(child_pair.1, (idx + (offset as usize)) as i64, child_ent.kind, &child_pair.0);
+                    debug!("  readdir for inode {}, adding '{}' as inode {}", inode, child_pair.0, child_pair.1);
+                    reply.add(child_pair.1, absolute_index as i64, child_ent.kind, &child_pair.0);
+                    absolute_index += 1;
                 } else {
+                    debug!("  readdir for inode {}, could not find inode {} which was given in dir_ent as '{}'", inode, child_pair.1, child_pair.0);
                     reply.error(ENOENT);
                     return;
                 }
@@ -216,11 +328,11 @@ mod tests {
         std::thread::sleep(time::Duration::from_millis(250));
         info!("Awake!");
 
-        let mut buffer = String::new();
-        let to_open = format!("{}/{}", mnt_str, "hello.txt");
+        let txt_file = "LC80440342017101LGN00_MTL.txt";
+        let to_open = format!("{}/{}", mnt_str, txt_file);
         info!("Try to open '{}'", to_open);
-        File::open(to_open).unwrap().read_to_string(&mut buffer);
-        info!("Reading hello.txt for fun: {}", buffer);
+        let result = fs::read_to_string(to_open).unwrap();
+        info!(" got back {}", result);
     }
 
     #[test]
