@@ -36,18 +36,24 @@ pub struct GCSFS {
     // Sigh. It'd be nice to just be able to consistently generate an
     // inode from a path...
     inode_counter: Inode,
+
+    // GCS configuration
+    base_object_url: String,
+    gcs_prefix: Option<String>,
 }
 
 impl GCSFS {
     // TODO(boulos): Take the bucket, prefix, maybe even auth token?
-    pub fn new() -> Self {
-        info!("Made a GCSFS!");
+    pub fn new(object_url: String, prefix: Option<String>) -> Self {
+        info!("Making a GCSFS!");
         GCSFS {
             inode_to_attr: HashMap::new(),
             inode_to_obj: HashMap::new(),
             directory_map: HashMap::new(),
             inode_map: HashMap::new(),
             inode_counter: 0,
+            base_object_url: object_url,
+            gcs_prefix: prefix,
         }
     }
 
@@ -60,7 +66,7 @@ impl GCSFS {
     fn load_file(&mut self, full_path: String, obj: Object) -> Inode {
         let inode = self.get_inode();
 
-        info!("   GCSFS. Loading {}", full_path);
+        debug!("   GCSFS. Loading {}", full_path);
 
         let file_time: Timespec = Timespec { sec: 1534812086, nsec: 0 };    // 2018-08-20 15:41 Pacific
 
@@ -97,7 +103,7 @@ impl GCSFS {
             None => "",
         };
 
-        info!("   GCSFS. DIR {}", prefix_for_load);
+        debug!("   GCSFS. DIR {}", prefix_for_load);
 
         // Always use / as delim.
         let (single_level_objs, subdirs) = list_objects(bucket_url, prefix, Some("/")).unwrap();
@@ -178,22 +184,22 @@ impl Filesystem for GCSFS {
         info!("init!");
         debug!("debug_logger: init!");
 
-
-        let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
-        // Simple single dir.
-        //let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
-        // One level up to test subdir loading.
-        let prefix = "LC08/PRE/044/034/";
+        // TODO(boulos): Gross. Because load_dir is mutable (it's
+        // changing the struct!) and there's no way to mark the config
+        // as immutable, I have to lie or make a copy.
+        let obj_url = self.base_object_url.clone();
+        let prefix = self.gcs_prefix.clone();
+        let prefix_str = prefix.as_ref().map(String::as_str);
 
         // Trigger a load from the root of the bucket
-        let root_inode = self.load_dir(object_url, Some(prefix), None);
+        let root_inode = self.load_dir(obj_url.as_ref(), prefix_str, None);
         self.inode_map.insert(".".to_string(), root_inode);
 
         Ok(())
     }
 
     fn lookup(&mut self, _req: &Request, parent: Inode, name: &OsStr, reply: ReplyEntry) {
-        info!("lookup(parent={}, name={})", parent, name.to_str().unwrap());
+        debug!("lookup(parent={}, name={})", parent, name.to_str().unwrap());
 
         if let Some(dir_ent) = self.directory_map.get(&parent) {
             // TODO(boulos): Is this the full name, or just the portion? (I believe just portion)
@@ -209,13 +215,14 @@ impl Filesystem for GCSFS {
                     }
                 }
             }
+            debug!("  Never found  '{}'", search_name);
         }
 
         reply.error(ENOENT);
     }
 
     fn getattr(&mut self, _req: &Request, inode: Inode, reply: ReplyAttr) {
-        info!("Trying to getattr() on inode {}", inode);
+        debug!("Trying to getattr() on inode {}", inode);
 
         if let Some(attr) = self.inode_to_attr.get(&inode) {
             reply.attr(&TTL_30s, &attr);
@@ -225,18 +232,19 @@ impl Filesystem for GCSFS {
     }
 
     fn read(&mut self, _req: &Request, inode: Inode, _fh: u64, offset: i64, _size: u32, reply: ReplyData) {
-        info!("Trying to read() {} on {} at offset {}", _size, inode, offset);
+        debug!("Trying to read() {} on {} at offset {}", _size, inode, offset);
         if let Some(obj) = self.inode_to_obj.get(&inode) {
             debug!("  Performing read for obj: {:#?}", obj);
             let bytes = super::bucket::get_bytes(obj, offset as u64, _size as u64).unwrap_or(vec![]);
             reply.data(bytes.as_slice());
         } else {
+            debug!("  read FAILED, inode {} didn't return a GCS Object", inode);
             reply.error(ENOENT);
         }
     }
 
     fn readdir(&mut self, _req: &Request, inode: Inode, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
-        info!("Trying to readdir on {} with offset {}", inode, offset);
+        debug!("Trying to readdir on {} with offset {}", inode, offset);
         if let Some(dir_ent) = self.directory_map.get(&inode) {
             debug!("  directory {} has {} entries ({:#?})", inode, dir_ent.entries.len(), dir_ent.entries);
             let mut absolute_index = offset + 1;
@@ -299,11 +307,33 @@ mod tests {
         assert!(output.status.success());
     }
 
+    fn run_cp(src_path: &str, dst_path: &str, cwd: &str) {
+        info!("about to run cp {} {} in cwd: {}", src_path, dst_path, cwd);
+
+        let output = Command::new("cp")
+            .arg(src_path)
+            .arg(dst_path)
+            .current_dir(cwd)
+            .output()
+            .expect("cp failed");
+
+        info!("status: {}", output.status);
+        info!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        info!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success());
+    }
+
     pub unsafe fn mount_tempdir_ro<'a>(mountpoint: PathBuf) {
-        let fs = GCSFS::new();
+        let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
+        // Simple single dir.
+        //let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
+        // One level up to test subdir loading.
+        let prefix = "LC08/PRE/044/034/";
+
+        let fs = GCSFS::new(object_url.to_string(), Some(prefix.to_string()));
 
         info!("Attempting to mount gcsfs @ {}", mountpoint.to_str().unwrap());
-        let options = ["-o", "rw", "-o", "auto_umount", /*"-o", "fsname=gcsfs", "-o", "big_writes" */]
+        let options = ["-o", "rw", "-o", "auto_umount", "-o", "iosize=4194304", /*"-o", "fsname=gcsfs", "-o", "big_writes" */]
             .iter()
             .map(|o| o.as_ref())
             .collect::<Vec<&OsStr>>();
@@ -343,11 +373,12 @@ mod tests {
         std::thread::sleep(time::Duration::from_millis(250));
         info!("Awake!");
 
-        let txt_file = "LC80440342017101LGN00_MTL.txt";
+        let txt_file = "LC80440342017101LGN00/LC80440342017101LGN00_MTL.txt";
         let to_open = format!("{}/{}", mnt_str, txt_file);
         info!("Try to open '{}'", to_open);
         let result = fs::read_to_string(to_open).unwrap();
         info!(" got back {}", result);
+        drop(daemon);
     }
 
     #[test]
@@ -375,5 +406,30 @@ mod tests {
         info!("now ls in the subdir {}", subdir);
         run_ls(&subdir);
         drop(fs);
+    }
+
+    #[test]
+    fn mount_and_cp<'a>() {
+        START.call_once(|| {
+            env_logger::init();
+        });
+
+        let dir = TempDir::new("mount_and_cp").unwrap();
+        let mnt = dir.into_path();
+        let mnt_str = String::from(mnt.to_str().unwrap());
+        let daemon = thread::spawn(|| { unsafe { mount_tempdir_ro(mnt); } });
+
+        info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
+
+        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(time::Duration::from_millis(250));
+        info!("Awake!");
+
+        let tif_file = "LC80440342017101LGN00_B7.TIF";
+        let sub_dir = "LC80440342017101LGN00";
+        let full_path = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
+        let dst_path = format!("/Users/boulos/{}", tif_file);
+        run_cp(&full_path, &dst_path, &mnt_str);
+        drop(daemon);
     }
 }

@@ -39,6 +39,7 @@ pub struct ListObjectsResponse {
 // NOTE(boulos): The service account needs both storage viewer (to see objects) and *project* viewer to see the Bucket.
 static GCLOUD_TOKEN: &'static str = "IMABADPERSON_HARDCODED_HERE_gcloud_auth_print_access_token_for_the_service_account";
 
+
 fn new_client() -> Result<reqwest::Client, reqwest::Error> {
     // NOTE(boulos): Previously, I was passing some default headers
     // here. Now that bearer_auth is per request, this is less needed,
@@ -82,7 +83,7 @@ fn get_object(url: Url) -> Result<Object, reqwest::Error> {
 }
 
 pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
-    info!("Asking for {} bytes at {} from the origin for {} (self link = {}", how_many, offset, obj.name, obj.self_link);
+    debug!("Asking for {} bytes at {} from the origin for {} (self link = {}", how_many, offset, obj.name, obj.self_link);
 
     // Use the self_link from the object as the url, but add ?alt=media
     let mut object_url = Url::parse(&obj.self_link).unwrap();
@@ -90,7 +91,7 @@ pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, re
 
     let client = new_client()?;
 
-    let byte_range = format!("bytes={}-{}", offset, offset + how_many);
+    let byte_range = format!("bytes={}-{}", offset, offset + how_many - 1);
 
     let mut response = client.get(object_url)
         .header(reqwest::header::RANGE, byte_range)
@@ -100,7 +101,7 @@ pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, re
 
     let mut buf: Vec<u8> = vec![];
     let written = response.copy_to(&mut buf)?;
-    info!("Got back {} bytes", written);
+    debug!("Got back {} bytes", written);
     Ok(buf)
 }
 
@@ -143,7 +144,7 @@ fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, 
 }
 
 pub fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> Result<(Vec<Object>, Vec<String>), reqwest::Error> {
-    println!("Asking for a list from bucket '{}' with prefix '{:#?}' and delim = '{:#?}'", bucket, prefix, delim);
+    debug!("Asking for a list from bucket '{}' with prefix '{:#?}' and delim = '{:#?}'", bucket, prefix, delim);
 
     let mut objects: Vec<Object> = vec![];
     let mut prefixes: Vec<String> = vec![];
@@ -170,8 +171,8 @@ pub fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> 
         }
 
         // Sleep a bit between requests
-        println!("  Sleeping for 100 ms, to avoid dos block");
-        std::thread::sleep(time::Duration::from_millis(100));
+        println!("  Sleeping for 10 ms, to avoid dos block");
+        std::thread::sleep(time::Duration::from_millis(10));
     }
 
     Ok((objects, prefixes))
