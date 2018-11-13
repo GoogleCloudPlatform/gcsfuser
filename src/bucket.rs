@@ -5,6 +5,7 @@ extern crate serde_with;
 extern crate url;
 
 use url::Url;
+use std::{thread, time};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -32,12 +33,11 @@ pub struct Object {
 pub struct ListObjectsResponse {
     next_page_token: Option<String>,
     prefixes: Option<Vec<String>>,
-    items: Vec<Object>,
+    items: Option<Vec<Object>>,
 }
 
 // NOTE(boulos): The service account needs both storage viewer (to see objects) and *project* viewer to see the Bucket.
 static GCLOUD_TOKEN: &'static str = "IMABADPERSON_HARDCODED_HERE_gcloud_auth_print_access_token_for_the_service_account";
-
 
 fn new_client() -> Result<reqwest::Client, reqwest::Error> {
     // NOTE(boulos): Previously, I was passing some default headers
@@ -48,7 +48,7 @@ fn new_client() -> Result<reqwest::Client, reqwest::Error> {
 }
 
 fn get_bucket(url: Url) -> Result<Bucket, reqwest::Error> {
-    println!("Looking to request: {:#?}", url);
+    debug!("Looking to request: {:#?}", url);
 
     let client = new_client()?;
 
@@ -57,15 +57,15 @@ fn get_bucket(url: Url) -> Result<Bucket, reqwest::Error> {
         .send()
         .expect("Failed to send request");
 
-    println!("{:#?}", response);
+    debug!("{:#?}", response);
 
     let bucket = response.json::<Bucket>();
-    println!("{:#?}", bucket);
+    debug!("{:#?}", bucket);
     return bucket
 }
 
 fn get_object(url: Url) -> Result<Object, reqwest::Error> {
-    println!("Looking to request: {:#?}", url);
+    debug!("Looking to request: {:#?}", url);
 
     let client = new_client()?;
 
@@ -74,15 +74,15 @@ fn get_object(url: Url) -> Result<Object, reqwest::Error> {
         .send()
         .expect("Failed to send request");
 
-    println!("{:#?}", response);
+    debug!("{:#?}", response);
 
     let object = response.json::<Object>();
-    println!("{:#?}", object);
+    debug!("{:#?}", object);
     return object
 }
 
 pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
-    println!("Asking for {} bytes at {} from the origin for {} (self link = {}", how_many, offset, obj.name, obj.self_link);
+    info!("Asking for {} bytes at {} from the origin for {} (self link = {}", how_many, offset, obj.name, obj.self_link);
 
     // Use the self_link from the object as the url, but add ?alt=media
     let mut object_url = Url::parse(&obj.self_link).unwrap();
@@ -100,12 +100,13 @@ pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, re
 
     let mut buf: Vec<u8> = vec![];
     let written = response.copy_to(&mut buf)?;
-    println!("Got back {} bytes", written);
+    info!("Got back {} bytes", written);
     Ok(buf)
 }
 
 fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, token: Option<&str>) -> Result<ListObjectsResponse, reqwest::Error> {
     let mut list_url = Url::parse(bucket).unwrap();
+
     if let Some(prefix_str) = prefix {
         list_url.query_pairs_mut().append_pair("prefix", prefix_str);
     }
@@ -118,12 +119,24 @@ fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, 
         list_url.query_pairs_mut().append_pair("pageToken", token_str);
     }
 
-    let client = new_client()?;
+    let mut op = || -> Result<reqwest::Response, reqwest::Error> {
 
-    let mut response = client.get(list_url)
-        .bearer_auth(GCLOUD_TOKEN)
-        .send()
-        .expect("Failed to send request");
+        let client = new_client()?;
+
+        let mut response = client.get(list_url)
+            .bearer_auth(GCLOUD_TOKEN)
+            .send()
+            .expect("Failed to send request");
+
+        debug!("  List obj response is {:#?}", response);
+
+        Ok(response)
+    };
+
+    // TODO(boulos): Do jittered exponential backoff
+    let mut response = op()?;
+
+    //debug!(" ListObject body => {:#?}", response.text()?);
 
     let list_response = response.json::<ListObjectsResponse>();
     return list_response;
@@ -143,7 +156,10 @@ pub fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> 
             false => _do_one_list_object(bucket, prefix, delim, Some(&page_token))?,
         };
 
-        objects.append(&mut resp.items);
+        if resp.items.is_some() {
+            objects.append(&mut resp.items.unwrap());
+        }
+
         if resp.prefixes.is_some() {
             prefixes.append(&mut resp.prefixes.unwrap());
         }
@@ -152,6 +168,10 @@ pub fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> 
             Some(temp_token_str) => page_token = temp_token_str.clone(),
             None => break,
         }
+
+        // Sleep a bit between requests
+        println!("  Sleeping for 100 ms, to avoid dos block");
+        std::thread::sleep(time::Duration::from_millis(100));
     }
 
     Ok((objects, prefixes))
@@ -213,7 +233,7 @@ mod tests {
     fn test_list_objects() {
         let object_url = "https://www.googleapis.com/storage/v1/b/boulos-hadoop/o";
         let prefix = "bdutil-staging";
-        let delim = "%2F";
+        let delim = "/";
 
         let (objects, _) = list_objects(object_url, Some(prefix), Some(delim)).unwrap();
         println!("Got {} objects", objects.len());
@@ -233,7 +253,7 @@ mod tests {
     fn test_list_paginated() {
         let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
         let prefix = "LC08/PRE/044/034/";
-        let delim = "%2F";
+        let delim = "/";
 
         let (objects, prefixes) = list_objects(object_url, Some(prefix), Some(delim)).unwrap();
         println!("Got {} objects", objects.len());

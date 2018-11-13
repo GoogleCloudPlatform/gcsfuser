@@ -60,7 +60,7 @@ impl GCSFS {
     fn load_file(&mut self, full_path: String, obj: Object) -> Inode {
         let inode = self.get_inode();
 
-        println!("   GCSFS. Loading {}", full_path);
+        info!("   GCSFS. Loading {}", full_path);
 
         let file_time: Timespec = Timespec { sec: 1534812086, nsec: 0 };    // 2018-08-20 15:41 Pacific
 
@@ -97,10 +97,10 @@ impl GCSFS {
             None => "",
         };
 
-        println!("   GCSFS. DIR {}", prefix_for_load);
+        info!("   GCSFS. DIR {}", prefix_for_load);
 
-        // Always use %2F aka '/' for delim.
-        let (single_level_objs, subdirs) = list_objects(bucket_url, prefix, Some("%2F")).unwrap();
+        // Always use / as delim.
+        let (single_level_objs, subdirs) = list_objects(bucket_url, prefix, Some("/")).unwrap();
 
         let dir_time: Timespec = Timespec { sec: 1534812086, nsec: 0 };    // 2018-08-20 15:41 Pacific
 
@@ -133,11 +133,21 @@ impl GCSFS {
             (String::from(".."), parent_inode),
         ];
 
-        // obj.name returns paths relative to the root of the
-        // bucket. Strip off the prefix to get the "filename".
+        // GCS returns paths relative to the root of the bucket for
+        // obj.name. Strip off the prefix to get the "filename".
         let base_dir_index = prefix_for_load.len();
 
-        // TODO(boulos): Recursively load_dir on the prefixes, and get their inodes
+        // Loop over all the subdirs, recursively load them.
+        for dir in subdirs {
+            // To insert the "directory name", we get the basedir and
+            // strip the trailing slash.
+            let last_slash = dir.len() - 1;
+            let dir_str = dir[base_dir_index..last_slash].to_string();
+
+            let inode = self.load_dir(bucket_url, Some(&dir), Some(dir_inode));
+            dir_entries.push((dir_str, inode));
+        }
+
 
         // Loop over all the direct objects, adding them to our maps
         for obj in single_level_objs {
@@ -150,7 +160,7 @@ impl GCSFS {
             dir_entries.push((file_str, inode));
         }
 
-        println!("  Created dir_entries: {:#?}", dir_entries);
+        debug!("  Created dir_entries: {:#?}", dir_entries);
 
         self.directory_map.insert(dir_inode, PsuedoDir {
             name: prefix_for_load.to_string(),
@@ -170,7 +180,10 @@ impl Filesystem for GCSFS {
 
 
         let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
-        let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
+        // Simple single dir.
+        //let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
+        // One level up to test subdir loading.
+        let prefix = "LC08/PRE/044/034/";
 
         // Trigger a load from the root of the bucket
         let root_inode = self.load_dir(object_url, Some(prefix), None);
@@ -269,11 +282,13 @@ mod tests {
     static START: Once = Once::new();
 
     fn run_ls(cwd: &str) {
-        info!("about to run ls -la in cwd: {}", cwd);
+        info!("about to run ls -lFGa in cwd: {}", cwd);
 
         let output = Command::new("ls")
             .arg("-l")
             .arg("-a")
+            .arg("-F")
+            .arg("-G")
             .current_dir(cwd)
             .output()
             .expect("ls failed");
@@ -354,6 +369,11 @@ mod tests {
         std::thread::sleep(time::Duration::from_millis(250));
         info!("Awake!");
         run_ls(&mnt_str);
+
+
+        let subdir = format!("{}/{}", mnt_str, "LC80440342013170LGN00");
+        info!("now ls in the subdir {}", subdir);
+        run_ls(&subdir);
         drop(fs);
     }
 }
