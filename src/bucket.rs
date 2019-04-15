@@ -40,7 +40,7 @@ pub struct ListObjectsResponse {
 static GCLOUD_TOKEN: &'static str = "IMABADPERSON_HARDCODED_HERE_gcloud_auth_print_access_token_for_the_service_account";
 
 
-fn new_client() -> Result<reqwest::Client, reqwest::Error> {
+pub fn new_client() -> Result<reqwest::Client, reqwest::Error> {
     // NOTE(boulos): Previously, I was passing some default headers
     // here. Now that bearer_auth is per request, this is less needed,
     // but we can change that later.
@@ -82,16 +82,22 @@ fn get_object(url: Url) -> Result<Object, reqwest::Error> {
     return object
 }
 
+
 pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
+    let client = new_client()?;
+    return get_bytes_with_client(&client, obj, offset, how_many);
+}
+
+pub fn get_bytes_with_client(client: &reqwest::Client, obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
     debug!("Asking for {} bytes at {} from the origin for {} (self link = {}", how_many, offset, obj.name, obj.self_link);
 
     // Use the self_link from the object as the url, but add ?alt=media
     let mut object_url = Url::parse(&obj.self_link).unwrap();
     object_url.query_pairs_mut().append_pair("alt", "media");
 
-    let client = new_client()?;
-
     let byte_range = format!("bytes={}-{}", offset, offset + how_many - 1);
+
+    let now = std::time::Instant::now();
 
     let mut response = client.get(object_url)
         .header(reqwest::header::RANGE, byte_range)
@@ -101,7 +107,7 @@ pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, re
 
     let mut buf: Vec<u8> = vec![];
     let written = response.copy_to(&mut buf)?;
-    debug!("Got back {} bytes", written);
+    debug!("Got back {} bytes. Took {:#?}", written, now.elapsed());
     Ok(buf)
 }
 
@@ -128,6 +134,10 @@ fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, 
             .bearer_auth(GCLOUD_TOKEN)
             .send()
             .expect("Failed to send request");
+
+        if response.status().is_client_error() {
+            debug!("Got back {:#?}", response.status());
+        }
 
         debug!("  List obj response is {:#?}", response);
 

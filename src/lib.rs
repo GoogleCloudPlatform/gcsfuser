@@ -14,6 +14,7 @@ extern crate reqwest;
 
 extern crate fuse;
 extern crate libc;
+extern crate rayon;
 extern crate time;
 extern crate tempdir;
 
