@@ -8,16 +8,16 @@ use std::fs;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{sleep};
 use std::time;
-use time::Timespec;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::Object;
-use bucket::list_objects;
+use crate::bucket::list_objects;
 
 
 pub type Inode = u64;
 
 // TODO(boulos): What's a reasonable TTL? Since we're focused on read-only, let's set at least 30s.
-const TTL_30s: Timespec = Timespec { sec: 30, nsec: 0 };
+const TTL_30s: Duration = Duration::from_secs(30);
 
 struct PsuedoDir {
     name: String,
@@ -47,7 +47,7 @@ pub struct GCSFS {
     gcs_prefix: Option<String>,
 
     // Persistent client
-    gcs_client: reqwest::Client,
+    gcs_client: reqwest::blocking::Client,
 }
 
 impl GCSFS {
@@ -78,7 +78,7 @@ impl GCSFS {
 
         debug!("   GCSFS. Loading {}", full_path);
 
-        let file_time: Timespec = Timespec { sec: 1534812086, nsec: 0 };    // 2018-08-20 15:41 Pacific
+        let file_time: SystemTime = UNIX_EPOCH + Duration::new(1534812086, 0);    // 2018-08-20 15:41 Pacific
 
         let file_attr: FileAttr = FileAttr {
             ino: inode,
@@ -124,7 +124,7 @@ impl GCSFS {
         // Always use / as delim.
         let (single_level_objs, subdirs) = list_objects(bucket_url.as_ref(), prefix_clone.as_ref().map(String::as_str), Some("/")).unwrap();
 
-        let dir_time: Timespec = Timespec { sec: 1534812086, nsec: 0 };    // 2018-08-20 15:41 Pacific
+	let dir_time: SystemTime = UNIX_EPOCH + Duration::new(1534812086, 0);    // 2018-08-20 15:41 Pacific
 
         let dir_attr: FileAttr = FileAttr {
             ino: dir_inode,
@@ -437,7 +437,7 @@ mod tests {
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
         info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(time::Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(250));
         info!("Awake!");
 
         let txt_file = "LC80440342017101LGN00/LC80440342017101LGN00_MTL.txt";
@@ -464,7 +464,7 @@ mod tests {
         let fs = thread::spawn(|| { unsafe { mount_tempdir_ro(mnt); } });
         info!("mounted fs at {} on thread {:#?}", mnt_str, fs);
         info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(time::Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(250));
         info!("Awake!");
         run_ls(&mnt_str);
 
@@ -489,7 +489,7 @@ mod tests {
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
         info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(time::Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(250));
         info!("Awake!");
 
 

@@ -2,20 +2,22 @@
 name = "rust-gcs"
 version = "0.1.0"
 authors = ["Solomon Boulos <boulos@google.com>"]
+# We want async/await
+edition = "2018"
 
 description = "A library for accessing Google Cloud Storage via its JSON API."
 license = "Apache-2.0"
 
 [dependencies]
 env_logger = "*"
-fuse = "*"
+fuse = { git = "https://github.com/zargony/fuse-rs" }
 hyper = "*"
 libc = "*"
 log = "*"
 oauth2 = "*"
 openssl = "*"
 rayon = "*"
-reqwest = "*"
+reqwest = { version = "*", features = ["blocking", "json"] }
 serde = "*"
 serde_derive = "*"
 serde_json = "*"

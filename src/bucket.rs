@@ -36,15 +36,20 @@ pub struct ListObjectsResponse {
     items: Option<Vec<Object>>,
 }
 
-// NOTE(boulos): The service account needs both storage viewer (to see objects) and *project* viewer to see the Bucket.
-static GCLOUD_TOKEN: &'static str = "IMABADPERSON_HARDCODED_HERE_gcloud_auth_print_access_token_for_the_service_account";
+
+pub fn get_token() -> Result<&'static str, reqwest::Error> {
+    // NOTE(boulos): The service account needs both storage viewer (to see objects) and *project* viewer to see the Bucket.
+    static GCLOUD_TOKEN: &'static str = "IMABADPERSON_HARDCODED_HERE_gcloud_auth_print_access_token_for_the_service_account";
+
+    Ok(GCLOUD_TOKEN)
+}
 
 
-pub fn new_client() -> Result<reqwest::Client, reqwest::Error> {
+pub fn new_client() -> Result<reqwest::blocking::Client, reqwest::Error> {
     // NOTE(boulos): Previously, I was passing some default headers
     // here. Now that bearer_auth is per request, this is less needed,
     // but we can change that later.
-    return reqwest::Client::builder()
+    return reqwest::blocking::Client::builder()
         .build();
 }
 
@@ -52,9 +57,10 @@ fn get_bucket(url: Url) -> Result<Bucket, reqwest::Error> {
     debug!("Looking to request: {:#?}", url);
 
     let client = new_client()?;
+    let token = get_token()?;
 
     let mut response = client.get(url)
-        .bearer_auth(GCLOUD_TOKEN)
+        .bearer_auth(token)
         .send()
         .expect("Failed to send request");
 
@@ -69,9 +75,10 @@ fn get_object(url: Url) -> Result<Object, reqwest::Error> {
     debug!("Looking to request: {:#?}", url);
 
     let client = new_client()?;
+    let token = get_token()?;
 
     let mut response = client.get(url)
-        .bearer_auth(GCLOUD_TOKEN)
+        .bearer_auth(token)
         .send()
         .expect("Failed to send request");
 
@@ -88,7 +95,7 @@ pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, re
     return get_bytes_with_client(&client, obj, offset, how_many);
 }
 
-pub fn get_bytes_with_client(client: &reqwest::Client, obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
+pub fn get_bytes_with_client(client: &reqwest::blocking::Client, obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
     debug!("Asking for {} bytes at {} from the origin for {} (self link = {}", how_many, offset, obj.name, obj.self_link);
 
     // Use the self_link from the object as the url, but add ?alt=media
@@ -99,9 +106,11 @@ pub fn get_bytes_with_client(client: &reqwest::Client, obj: &Object, offset: u64
 
     let now = std::time::Instant::now();
 
+    let token = get_token()?;
+
     let mut response = client.get(object_url)
         .header(reqwest::header::RANGE, byte_range)
-        .bearer_auth(GCLOUD_TOKEN)
+        .bearer_auth(token)
         .send()
         .expect("Failed to send request");
 
@@ -126,12 +135,13 @@ fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, 
         list_url.query_pairs_mut().append_pair("pageToken", token_str);
     }
 
-    let mut op = || -> Result<reqwest::Response, reqwest::Error> {
+    let mut op = || -> Result<reqwest::blocking::Response, reqwest::Error> {
 
         let client = new_client()?;
+	let token = get_token()?;
 
         let mut response = client.get(list_url)
-            .bearer_auth(GCLOUD_TOKEN)
+            .bearer_auth(token)
             .send()
             .expect("Failed to send request");
 
