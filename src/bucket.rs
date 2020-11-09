@@ -5,7 +5,8 @@ extern crate serde_with;
 extern crate url;
 
 use url::Url;
-use std::{thread, time};
+use lazy_static::lazy_static;
+use tame_oauth::gcp::prelude::*;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -36,14 +37,38 @@ pub struct ListObjectsResponse {
     items: Option<Vec<Object>>,
 }
 
-
-pub fn get_token() -> Result<&'static str, reqwest::Error> {
-    // NOTE(boulos): The service account needs both storage viewer (to see objects) and *project* viewer to see the Bucket.
-    static GCLOUD_TOKEN: &'static str = "IMABADPERSON_HARDCODED_HERE_gcloud_auth_print_access_token_for_the_service_account";
-
-    Ok(GCLOUD_TOKEN)
+// Add a simple union type of "Either reqwest::Error" (our Transport)
+// or generic Http errors.
+#[derive(Debug)]
+pub enum HttpError {
+    Transport(reqwest::Error),
+    Generic(http::Error),
 }
 
+impl From<reqwest::Error> for HttpError {
+    fn from(err: reqwest::Error) -> Self {
+	HttpError::Transport(err)
+    }
+}
+
+impl From<http::Error> for HttpError {
+    fn from(err: http::Error) -> Self {
+	HttpError::Generic(err)
+    }
+}
+
+
+lazy_static!{
+    static ref TOKEN_PROVIDER: ServiceAccountAccess = {
+	// Read in the usual key file.
+	let env_key = "GOOGLE_APPLICATION_CREDENTIALS";
+	let cred_path = std::env::var(env_key).expect("You must set GOOGLE_APPLICATION_CREDENTIALS environment variable");
+	let key_data = std::fs::read_to_string(cred_path).expect("failed to read credential file");
+	let acct_info = ServiceAccountInfo::deserialize(key_data).expect("failed to decode credential file");
+
+	ServiceAccountAccess::new(acct_info).expect("failed to create OAuth Token Provider")
+    };
+}
 
 pub fn new_client() -> Result<reqwest::blocking::Client, reqwest::Error> {
     // NOTE(boulos): Previously, I was passing some default headers
@@ -53,7 +78,68 @@ pub fn new_client() -> Result<reqwest::blocking::Client, reqwest::Error> {
         .build();
 }
 
-fn get_bucket(url: Url) -> Result<Bucket, reqwest::Error> {
+
+// Given an http::Request, actually issue it via reqwest, returning
+// the http::Response.
+pub fn do_http_via_reqwest(req: http::Request<Vec<u8>>) -> Result<http::Response<Vec<u8>>, HttpError> {
+    let (parts, body) = req.into_parts();
+
+    assert_eq!(parts.method, http::Method::POST);
+
+    let client = new_client()?;
+
+    let uri = parts.uri.to_string();
+
+    // Go from http::Request => a POST via reqwest
+    let response = client.post(&uri)
+	.headers(parts.headers)
+	.body(body)
+	.send()
+	.expect("Failed to send POST");
+
+    // Convert the response from reqwest => http::Response
+    let mut builder = http::Response::builder()
+	.status(response.status())
+	.version(response.version());
+
+    // There's no way to pass in a header map (only headers_mut and
+    // headers_ref), so we go through and map() across it.
+    let resp_headers = builder.headers_mut().unwrap();
+    resp_headers.extend(response.headers().into_iter()
+			.map(|(k, v)| (k.clone(), v.clone())));
+
+    // NOTE(boulos): This has to come after creating builder, because
+    // .bytes() consumes the response (so response.status() above is
+    // out of scope).
+    let bytes : Vec<u8> = response.bytes().map_err(HttpError::Transport)?.to_vec();
+
+    // Get the response out. (Confusingly ".body()" consumes the builder)
+    builder.body(bytes).map_err(HttpError::Generic)
+}
+
+
+// Get a bearer token from our ServiceAccount (potentially performing an Oauth dance via HTTP)
+pub fn get_token() -> Result<String, HttpError> {
+    // NOTE(boulos): The service account needs both storage viewer (to
+    // see objects) and *project* viewer to see the Bucket.
+    let scopes = vec!["https://www.googleapis.com/auth/devstorage.read_write"];
+
+    let token_or_req = TOKEN_PROVIDER.get_token(&scopes).unwrap();
+
+    match token_or_req {
+	TokenOrRequest::Request { request, scope_hash, .. } => {
+	    let response = do_http_via_reqwest(request)?;
+	    let token = TOKEN_PROVIDER.
+		parse_token_response(scope_hash, response).unwrap();
+	    Ok(token.access_token)
+	}
+	TokenOrRequest::Token(token) => Ok(token.access_token)
+    }
+}
+
+
+
+fn get_bucket(url: Url) -> Result<Bucket, HttpError> {
     debug!("Looking to request: {:#?}", url);
 
     let client = new_client()?;
@@ -68,10 +154,10 @@ fn get_bucket(url: Url) -> Result<Bucket, reqwest::Error> {
 
     let bucket = response.json::<Bucket>();
     debug!("{:#?}", bucket);
-    return bucket
+    return bucket.map_err(HttpError::Transport)
 }
 
-fn get_object(url: Url) -> Result<Object, reqwest::Error> {
+fn get_object(url: Url) -> Result<Object, HttpError> {
     debug!("Looking to request: {:#?}", url);
 
     let client = new_client()?;
@@ -86,16 +172,16 @@ fn get_object(url: Url) -> Result<Object, reqwest::Error> {
 
     let object = response.json::<Object>();
     debug!("{:#?}", object);
-    return object
+    return object.map_err(HttpError::Transport)
 }
 
 
-pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
+pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, HttpError> {
     let client = new_client()?;
     return get_bytes_with_client(&client, obj, offset, how_many);
 }
 
-pub fn get_bytes_with_client(client: &reqwest::blocking::Client, obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, reqwest::Error> {
+pub fn get_bytes_with_client(client: &reqwest::blocking::Client, obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, HttpError> {
     debug!("Asking for {} bytes at {} from the origin for {} (self link = {}", how_many, offset, obj.name, obj.self_link);
 
     // Use the self_link from the object as the url, but add ?alt=media
@@ -120,7 +206,7 @@ pub fn get_bytes_with_client(client: &reqwest::blocking::Client, obj: &Object, o
     Ok(buf)
 }
 
-fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, token: Option<&str>) -> Result<ListObjectsResponse, reqwest::Error> {
+fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, token: Option<&str>) -> Result<ListObjectsResponse, HttpError> {
     let mut list_url = Url::parse(bucket).unwrap();
 
     if let Some(prefix_str) = prefix {
@@ -135,7 +221,7 @@ fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, 
         list_url.query_pairs_mut().append_pair("pageToken", token_str);
     }
 
-    let mut op = || -> Result<reqwest::blocking::Response, reqwest::Error> {
+    let mut op = || -> Result<reqwest::blocking::Response, HttpError> {
 
         let client = new_client()?;
 	let token = get_token()?;
@@ -160,10 +246,10 @@ fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, 
     //debug!(" ListObject body => {:#?}", response.text()?);
 
     let list_response = response.json::<ListObjectsResponse>();
-    return list_response;
+    return list_response.map_err(HttpError::Transport);
 }
 
-pub fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> Result<(Vec<Object>, Vec<String>), reqwest::Error> {
+pub fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> Result<(Vec<Object>, Vec<String>), HttpError> {
     debug!("Asking for a list from bucket '{}' with prefix '{:#?}' and delim = '{:#?}'", bucket, prefix, delim);
 
     let mut objects: Vec<Object> = vec![];
@@ -192,7 +278,7 @@ pub fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> 
 
         // Sleep a bit between requests
         println!("  Sleeping for 10 ms, to avoid dos block");
-        std::thread::sleep(time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
     Ok((objects, prefixes))
