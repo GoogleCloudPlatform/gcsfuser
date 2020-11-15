@@ -1,5 +1,5 @@
-use fuse::{FileType, FileAttr, Filesystem, Request, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry};
-use fuse::FUSE_ROOT_ID;
+use fuser::{FileType, FileAttr, Filesystem, Request, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry};
+use fuser::FUSE_ROOT_ID;
 use libc::{ENOENT};
 use rayon::scope;
 use std::collections::HashMap;
@@ -83,7 +83,7 @@ impl GCSFS {
         let file_attr: FileAttr = FileAttr {
             ino: inode,
             size: obj.size,
-            blocks: 0 /* do I need this? */,
+            blocks: 1 /* grr. obj.size / blksize? */,
             atime: file_time,
             mtime: file_time,
             ctime: file_time,
@@ -95,6 +95,8 @@ impl GCSFS {
             gid: 20,
             rdev: 0,
             flags: 0,
+	    blksize: 512,
+	    padding: 0,
         };
 
         self.inode_to_attr.write().unwrap().insert(inode, file_attr);
@@ -141,6 +143,8 @@ impl GCSFS {
             gid: 20,
             rdev: 0,
             flags: 0,
+	    blksize: 512,
+	    padding: 0,
         };
 
         self.inode_to_attr.write().unwrap().insert(dir_inode, dir_attr);
@@ -271,7 +275,7 @@ impl Filesystem for GCSFS {
         }
     }
 
-    fn read(&mut self, _req: &Request, inode: Inode, _fh: u64, offset: i64, _size: u32, reply: ReplyData) {
+    fn read(&mut self, _req: &Request, inode: Inode, _fh: u64, offset: i64, _size: u32, _flags: i32, _lock_owner: Option<u64>, reply: ReplyData) {
         debug!("Trying to read() {} on {} at offset {}", _size, inode, offset);
         if let Some(obj) = self.inode_to_obj.read().unwrap().get(&inode) {
             debug!("  Performing read for obj: {:#?}", obj);
@@ -293,7 +297,9 @@ impl Filesystem for GCSFS {
 
                 if let Some(child_ent) = self.inode_to_attr.read().unwrap().get(&child_pair.1) {
                     debug!("  readdir for inode {}, adding '{}' as inode {}", inode, child_pair.0, child_pair.1);
-                    reply.add(child_pair.1, absolute_index as i64, child_ent.kind, &child_pair.0);
+                    if (reply.add(child_pair.1, absolute_index as i64, child_ent.kind, &child_pair.0)) {
+			break;
+		    }
                     absolute_index += 1;
                 } else {
                     debug!("  readdir for inode {}, could not find inode {} which was given in dir_ent as '{}'", inode, child_pair.1, child_pair.0);
@@ -311,7 +317,6 @@ impl Filesystem for GCSFS {
 #[cfg(test)]
 mod tests {
     extern crate env_logger;
-    extern crate fuse;
     extern crate tempdir;
 
     use super::*;
@@ -393,7 +398,9 @@ mod tests {
         let fs = GCSFS::new(object_url.to_string(), Some(prefix.to_string()));
 
         info!("Attempting to mount gcsfs @ {}", mountpoint.to_str().unwrap());
-        let options = ["-o", "rw", "-o", "auto_unmount", "-o", "iosize=33554432" /* 32MB */,
+        let options = ["-o", "rw",
+		       "-o", "auto_unmount",
+		       "-o", "iosize=33554432" /* 32MB */,
                        "-o", "async",
                        "-o", "noatime",
                        "-o", "large_read",
@@ -405,7 +412,7 @@ mod tests {
             .map(|o| o.as_ref())
             .collect::<Vec<&OsStr>>();
 
-        fuse::mount(fs, &mountpoint, &options).unwrap();
+        fuser::mount(fs, &mountpoint, &options).unwrap();
         panic!("We should never get here, right...?");
     }
 

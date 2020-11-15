@@ -10,7 +10,7 @@ license = "Apache-2.0"
 
 [dependencies]
 env_logger = "*"
-fuse = { git = "https://github.com/zargony/fuse-rs" }
+fuser = { git = "https://github.com/cberner/fuser" }
 hyper = "*"
 http = "*"
 lazy_static = "*"

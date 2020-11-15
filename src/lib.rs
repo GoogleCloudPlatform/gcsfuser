@@ -12,7 +12,6 @@ extern crate url;
 
 extern crate reqwest;
 
-extern crate fuse;
 extern crate libc;
 extern crate rayon;
 extern crate time;
@@ -27,4 +26,3 @@ pub use self::bucket::Object;
 pub use self::fs::GCSFS;
 //pub use self::bucket::GetObject;
 //pub use self::object::Object;
-
