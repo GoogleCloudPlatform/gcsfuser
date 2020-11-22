@@ -9,6 +9,7 @@ description = "A library for accessing Google Cloud Storage via its JSON API."
 license = "Apache-2.0"
 
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
 env_logger = "*"
 fuser = { git = "https://github.com/cberner/fuser" }
 hyper = "*"

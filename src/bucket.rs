@@ -7,6 +7,8 @@ extern crate url;
 use url::Url;
 use lazy_static::lazy_static;
 use tame_oauth::gcp::prelude::*;
+use chrono::{DateTime, Utc};
+
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +28,8 @@ pub struct Object {
     self_link: String,
     #[serde(with = "serde_with::rust::display_fromstr")]
     pub size: u64,
+    pub time_created: DateTime<Utc>,
+    pub updated: DateTime<Utc>
 }
 
 
@@ -327,6 +331,8 @@ mod tests {
         ).unwrap();
         let object: Object = get_object(object_url).unwrap();
         println!("Object has {} bytes", object.size);
+
+	println!("Object debug is {:#?}", object);
 
         let bytes: Vec<u8> = get_bytes(&object, 0, 4096).unwrap();
         println!("Got back:\n {}", String::from_utf8(bytes).unwrap());

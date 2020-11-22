@@ -78,16 +78,19 @@ impl GCSFS {
 
         debug!("   GCSFS. Loading {}", full_path);
 
-        let file_time: SystemTime = UNIX_EPOCH + Duration::new(1534812086, 0);    // 2018-08-20 15:41 Pacific
+	let mtime: SystemTime = obj.updated.into();
+	let ctime: SystemTime = obj.time_created.into();
+	// GCS doesn't have atime, use mtime
+	let atime = mtime;
 
         let file_attr: FileAttr = FileAttr {
             ino: inode,
             size: obj.size,
             blocks: 1 /* grr. obj.size / blksize? */,
-            atime: file_time,
-            mtime: file_time,
-            ctime: file_time,
-            crtime: file_time,
+            atime: atime,
+            mtime: mtime,
+            ctime: ctime,
+            crtime: ctime,
             kind: FileType::RegularFile,
             perm: 0o755,
             nlink: 1,
