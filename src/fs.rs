@@ -300,7 +300,8 @@ impl Filesystem for GCSFS {
 
                 if let Some(child_ent) = self.inode_to_attr.read().unwrap().get(&child_pair.1) {
                     debug!("  readdir for inode {}, adding '{}' as inode {}", inode, child_pair.0, child_pair.1);
-                    if (reply.add(child_pair.1, absolute_index as i64, child_ent.kind, &child_pair.0)) {
+                    if reply.add(child_pair.1, absolute_index as i64, child_ent.kind, &child_pair.0) {
+			// We've filled up our reply buffer. Exit.
 			break;
 		    }
                     absolute_index += 1;
@@ -506,7 +507,7 @@ mod tests {
         let tif_file = "LC80440342017101LGN00_B7.TIF";
         let sub_dir = "LC80440342017101LGN00";
         let full_path = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
-        let dst_path = format!("/Users/boulos/{}", tif_file);
+	let dst_path = format!("{}/{}", dirs::home_dir().unwrap().to_str().unwrap(), tif_file);
 
         let stat_time = std::time::Instant::now();
         info!("Calling stat to trigger init");
