@@ -1,4 +1,4 @@
-use fuser::{FileType, FileAttr, Filesystem, Request, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry};
+use fuser::{FileType, FileAttr, Filesystem, KernelConfig, Request, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry};
 use fuser::FUSE_ROOT_ID;
 use libc::{ENOENT};
 use rayon::scope;
@@ -232,7 +232,7 @@ impl GCSFS {
 
 impl Filesystem for GCSFS {
 
-    fn init(&mut self, _req: &Request) -> Result<(), i32> {
+    fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> Result<(), i32> {
         info!("init!");
         debug!("debug_logger: init!");
 

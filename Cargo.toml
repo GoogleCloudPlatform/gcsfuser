@@ -12,7 +12,6 @@ license = "Apache-2.0"
 chrono = { version = "0.4", features = ["serde"] }
 env_logger = "*"
 fuser = { git = "https://github.com/cberner/fuser" }
-hyper = "*"
 http = "*"
 lazy_static = "*"
 libc = "*"
@@ -20,7 +19,7 @@ log = "*"
 oauth2 = "*"
 openssl = "*"
 rayon = "*"
-reqwest = { version = "*", features = ["blocking", "json"] }
+reqwest = { version = "0.10.8", features = ["blocking", "json"] }
 serde = "*"
 serde_derive = "*"
 serde_json = "*"
