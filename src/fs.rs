@@ -391,23 +391,18 @@ mod tests {
         assert!(output.status.success());
     }
 
+    pub unsafe fn mount_bucket<'a>(object_url: String,
+				   prefix: Option<String>,
+				   mountpoint: String,
+				   read_only: bool) {
+        let fs = GCSFS::new(object_url, prefix);
 
-    pub unsafe fn mount_tempdir_ro<'a>(mountpoint: PathBuf) {
-        let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
-        // Simple single dir.
-        //let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
-        // One level up to test subdir loading.
-        let prefix = "LC08/PRE/044/034/";
-
-        let fs = GCSFS::new(object_url.to_string(), Some(prefix.to_string()));
-
-        info!("Attempting to mount gcsfs @ {}", mountpoint.to_str().unwrap());
+        info!("Attempting to mount gcsfs @ {}", mountpoint);
         let options = ["-o", "rw",
 		       "-o", "auto_unmount",
 		       "-o", "iosize=33554432" /* 32MB */,
                        "-o", "async",
                        "-o", "noatime",
-                       "-o", "large_read",
                        "-o", "max_read=33554432",
                        "-o", "max_readahead=8388608" /* 8 MB readahead */,
                        "-o", "noappledouble" /* Disable ._. and .DS_Store files */
@@ -419,6 +414,30 @@ mod tests {
         fuser::mount(fs, &mountpoint, &options).unwrap();
         panic!("We should never get here, right...?");
     }
+				   
+
+    pub unsafe fn mount_tempdir_ro<'a>(mountpoint: PathBuf) {
+        let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
+        // Simple single dir.
+        //let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
+        // One level up to test subdir loading.
+        let prefix = "LC08/PRE/044/034/";
+	
+	mount_bucket(object_url.to_string(),
+		     Some(prefix.to_string()),
+		     mountpoint.to_str().unwrap().to_string(),
+		     true);
+    }
+
+    pub unsafe fn mount_tempdir_rw<'a>(mountpoint: PathBuf) {
+        let object_url = "https://www.googleapis.com/storage/v1/b/boulos-rustgcs/o";
+
+	mount_bucket(object_url.to_string(),
+		     None,
+		     mountpoint.to_str().unwrap().to_string(),
+		     false);
+    }
+	
 
     #[test]
     fn just_mount<'a>() {
@@ -435,12 +454,12 @@ mod tests {
     }
 
     #[test]
-    fn mount_and_open<'a>() {
+    fn mount_and_read<'a>() {
         START.call_once(|| {
             env_logger::init();
         });
 
-        let dir = TempDir::new("mount_and_open").unwrap();
+        let dir = TempDir::new("mount_and_read").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = thread::spawn(|| { unsafe { mount_tempdir_ro(mnt); } });
@@ -458,6 +477,33 @@ mod tests {
         info!(" got back {}", result);
         drop(daemon);
     }
+
+    #[test]
+    #[ignore] // Not ready yet!
+    fn mount_and_write<'a>() {
+        START.call_once(|| {
+            env_logger::init();
+        });
+
+        let dir = TempDir::new("mount_and_write").unwrap();
+        let mnt = dir.into_path();
+        let mnt_str = String::from(mnt.to_str().unwrap());
+        let daemon = thread::spawn(|| { unsafe { mount_tempdir_rw(mnt); } });
+
+        info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
+
+        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(250));
+        info!("Awake!");
+
+        let txt_file = "mount_and_write.txt";
+        let to_open = format!("{}/{}", mnt_str, txt_file);
+        info!("Try to open '{}'", to_open);
+        let result = fs::write(to_open, "My first words!");
+        info!(" got back {:#?}", result);
+        drop(daemon);
+    }
+    
 
     #[test]
     fn mount_and_ls<'a>() {
