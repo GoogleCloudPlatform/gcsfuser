@@ -1,18 +1,20 @@
-use fuser::{FileType, FileAttr, Filesystem, KernelConfig, Request, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry};
 use fuser::FUSE_ROOT_ID;
+use fuser::{
+    FileAttr, FileType, Filesystem, KernelConfig, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
+    Request,
+};
 use libc::{EIO, ENOENT};
 use rayon::scope;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::sync::{Arc, Mutex, RwLock};
-use std::thread::{sleep};
+use std::thread::sleep;
 use std::time;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::Object;
 use crate::bucket::list_objects;
-
 
 pub type Inode = u64;
 
@@ -66,7 +68,7 @@ impl GCSFS {
             base_object_url: object_url,
             gcs_prefix: prefix,
             gcs_client: super::bucket::new_client(),
-	    tokio_rt: tokio::runtime::Runtime::new().unwrap(),
+            tokio_rt: tokio::runtime::Runtime::new().unwrap(),
         }
     }
 
@@ -82,15 +84,15 @@ impl GCSFS {
 
         debug!("   GCSFS. Loading {}", full_path);
 
-	let mtime: SystemTime = obj.updated.into();
-	let ctime: SystemTime = obj.time_created.into();
-	// GCS doesn't have atime, use mtime
-	let atime = mtime;
+        let mtime: SystemTime = obj.updated.into();
+        let ctime: SystemTime = obj.time_created.into();
+        // GCS doesn't have atime, use mtime
+        let atime = mtime;
 
         let file_attr: FileAttr = FileAttr {
             ino: inode,
             size: obj.size,
-            blocks: 1 /* grr. obj.size / blksize? */,
+            blocks: 1, /* grr. obj.size / blksize? */
             atime: atime,
             mtime: mtime,
             ctime: ctime,
@@ -102,8 +104,8 @@ impl GCSFS {
             gid: 20,
             rdev: 0,
             flags: 0,
-	    blksize: 512,
-	    padding: 0,
+            blksize: 512,
+            padding: 0,
         };
 
         self.inode_to_attr.write().unwrap().insert(inode, file_attr);
@@ -131,9 +133,14 @@ impl GCSFS {
         debug!("   GCSFS. DIR {}", prefix_for_load);
 
         // Always use / as delim.
-        let (single_level_objs, subdirs) = list_objects(bucket_url.as_ref(), prefix_clone.as_ref().map(String::as_str), Some("/")).unwrap();
+        let (single_level_objs, subdirs) = list_objects(
+            bucket_url.as_ref(),
+            prefix_clone.as_ref().map(String::as_str),
+            Some("/"),
+        )
+        .unwrap();
 
-	let dir_time: SystemTime = UNIX_EPOCH + Duration::new(1534812086, 0);    // 2018-08-20 15:41 Pacific
+        let dir_time: SystemTime = UNIX_EPOCH + Duration::new(1534812086, 0); // 2018-08-20 15:41 Pacific
 
         let dir_attr: FileAttr = FileAttr {
             ino: dir_inode,
@@ -150,11 +157,14 @@ impl GCSFS {
             gid: 20,
             rdev: 0,
             flags: 0,
-	    blksize: 512,
-	    padding: 0,
+            blksize: 512,
+            padding: 0,
         };
 
-        self.inode_to_attr.write().unwrap().insert(dir_inode, dir_attr);
+        self.inode_to_attr
+            .write()
+            .unwrap()
+            .insert(dir_inode, dir_attr);
 
         let parent_inode = match parent {
             Some(parent_val) => parent_val,
@@ -174,7 +184,10 @@ impl GCSFS {
         let subdir_len = subdirs.len();
         let inodes: Arc<RwLock<Vec<Inode>>> = Arc::new(RwLock::new(Vec::with_capacity(subdir_len)));
         // Pre-fill the array with 0s, so we can write into each slot blindly later.
-        inodes.write().unwrap().resize_with(subdir_len, Default::default);
+        inodes
+            .write()
+            .unwrap()
+            .resize_with(subdir_len, Default::default);
 
         rayon::scope(|s| {
             // NOTE(boulos): We have to do this so that the move
@@ -192,9 +205,11 @@ impl GCSFS {
                     if let Some(elem) = write_context.get_mut(i) {
                         *elem = inode;
                     } else {
-                        println!("ERROR: Tried to write inode '{}' to index {} \
+                        println!(
+                            "ERROR: Tried to write inode '{}' to index {} \
                                  for directory {} (subdirs has len {})",
-                                 inode, i, dir, subdir_len);
+                            inode, i, dir, subdir_len
+                        );
                     }
                 });
             }
@@ -224,18 +239,19 @@ impl GCSFS {
 
         debug!("  Created dir_entries: {:#?}", dir_entries);
 
-        self.directory_map.write().unwrap().insert(dir_inode, PsuedoDir {
-            name: prefix_for_load.to_string(),
-            entries: dir_entries,
-        });
+        self.directory_map.write().unwrap().insert(
+            dir_inode,
+            PsuedoDir {
+                name: prefix_for_load.to_string(),
+                entries: dir_entries,
+            },
+        );
 
-        return dir_inode
+        return dir_inode;
     }
-
 }
 
 impl Filesystem for GCSFS {
-
     fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> Result<(), i32> {
         info!("init!");
         debug!("debug_logger: init!");
@@ -244,7 +260,10 @@ impl Filesystem for GCSFS {
 
         // Trigger a load from the root of the bucket
         let root_inode = self.load_dir(prefix, None);
-        self.inode_map.write().unwrap().insert(".".to_string(), root_inode);
+        self.inode_map
+            .write()
+            .unwrap()
+            .insert(".".to_string(), root_inode);
 
         Ok(())
     }
@@ -256,11 +275,17 @@ impl Filesystem for GCSFS {
             // TODO(boulos): Is this the full name, or just the portion? (I believe just portion)
             let search_name = name.to_str().unwrap().to_string();
             for child_pair in dir_ent.entries.iter() {
-                debug!("  Is search target '{}' == dir_entry '{}'?", search_name, child_pair.0);
+                debug!(
+                    "  Is search target '{}' == dir_entry '{}'?",
+                    search_name, child_pair.0
+                );
                 if child_pair.0 == search_name {
                     if let Some(attr) = self.inode_to_attr.read().unwrap().get(&child_pair.1) {
                         // Found it! Return the info for the inode.
-                        debug!("  Found it! search target '{}' is inode {}", child_pair.0, child_pair.1);
+                        debug!(
+                            "  Found it! search target '{}' is inode {}",
+                            child_pair.0, child_pair.1
+                        );
                         reply.entry(&TTL_30s, &attr, 0);
                         return;
                     }
@@ -282,46 +307,85 @@ impl Filesystem for GCSFS {
         }
     }
 
-    fn read(&mut self, _req: &Request, inode: Inode, _fh: u64, offset: i64, _size: u32, _flags: i32, _lock_owner: Option<u64>, reply: ReplyData) {
-        debug!("Trying to read() {} on {} at offset {}", _size, inode, offset);
+    fn read(
+        &mut self,
+        _req: &Request,
+        inode: Inode,
+        _fh: u64,
+        offset: i64,
+        _size: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyData,
+    ) {
+        debug!(
+            "Trying to read() {} on {} at offset {}",
+            _size, inode, offset
+        );
         if let Some(obj) = self.inode_to_obj.read().unwrap().get(&inode) {
             debug!("  Performing read for obj: {:#?}", obj);
             let result = self.tokio_rt.block_on(async {
-		super::bucket::get_bytes_with_client(&self.gcs_client,
-						     obj,
-						     offset as u64,
-						     _size as u64).await
-	    });
+                super::bucket::get_bytes_with_client(
+                    &self.gcs_client,
+                    obj,
+                    offset as u64,
+                    _size as u64,
+                )
+                .await
+            });
 
-	    match result {
-		Ok(bytes) => {
-		    reply.data(&bytes);
-		},
-		Err(e) => {
-		    debug!("  get_bytes failed. Error {:#?}", e);
-		    reply.error(EIO);
-		}
-	    }
-	} else {
-	    debug!("  failed to find the object for inode {}", inode);
-	    reply.error(ENOENT);
-	}
+            match result {
+                Ok(bytes) => {
+                    reply.data(&bytes);
+                }
+                Err(e) => {
+                    debug!("  get_bytes failed. Error {:#?}", e);
+                    reply.error(EIO);
+                }
+            }
+        } else {
+            debug!("  failed to find the object for inode {}", inode);
+            reply.error(ENOENT);
+        }
     }
 
-    fn readdir(&mut self, _req: &Request, inode: Inode, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
+    fn readdir(
+        &mut self,
+        _req: &Request,
+        inode: Inode,
+        _fh: u64,
+        offset: i64,
+        mut reply: ReplyDirectory,
+    ) {
         debug!("Trying to readdir on {} with offset {}", inode, offset);
         if let Some(dir_ent) = self.directory_map.read().unwrap().get(&inode) {
-            debug!("  directory {} has {} entries ({:#?})", inode, dir_ent.entries.len(), dir_ent.entries);
+            debug!(
+                "  directory {} has {} entries ({:#?})",
+                inode,
+                dir_ent.entries.len(),
+                dir_ent.entries
+            );
             let mut absolute_index = offset + 1;
             for (idx, ref child_pair) in dir_ent.entries.iter().skip(offset as usize).enumerate() {
-                debug!("    looking at entry {}, got back pair {:#?}", idx, child_pair);
+                debug!(
+                    "    looking at entry {}, got back pair {:#?}",
+                    idx, child_pair
+                );
 
                 if let Some(child_ent) = self.inode_to_attr.read().unwrap().get(&child_pair.1) {
-                    debug!("  readdir for inode {}, adding '{}' as inode {}", inode, child_pair.0, child_pair.1);
-                    if reply.add(child_pair.1, absolute_index as i64, child_ent.kind, &child_pair.0) {
-			// We've filled up our reply buffer. Exit.
-			break;
-		    }
+                    debug!(
+                        "  readdir for inode {}, adding '{}' as inode {}",
+                        inode, child_pair.0, child_pair.1
+                    );
+                    if reply.add(
+                        child_pair.1,
+                        absolute_index as i64,
+                        child_ent.kind,
+                        &child_pair.0,
+                    ) {
+                        // We've filled up our reply buffer. Exit.
+                        break;
+                    }
                     absolute_index += 1;
                 } else {
                     debug!("  readdir for inode {}, could not find inode {} which was given in dir_ent as '{}'", inode, child_pair.1, child_pair.0);
@@ -409,31 +473,41 @@ mod tests {
         assert!(output.status.success());
     }
 
-    pub unsafe fn mount_bucket<'a>(object_url: String,
-				   prefix: Option<String>,
-				   mountpoint: String,
-				   read_only: bool) {
+    pub unsafe fn mount_bucket<'a>(
+        object_url: String,
+        prefix: Option<String>,
+        mountpoint: String,
+        read_only: bool,
+    ) {
         let fs = GCSFS::new(object_url, prefix);
 
         info!("Attempting to mount gcsfs @ {}", mountpoint);
-        let options = ["-o", "rw",
-		       "-o", "auto_unmount",
-                       "-o", "noatime",
-		       "-o", "iosize=33554432" /* 32MB */,
-                       "-o", "max_read=33554432",
-                       "-o", "max_readahead=8388608" /* 8 MB readahead */,
-		       "-o", "big_writes",
-		       "-o", "fsname=gcsfs",
-                       /* "-o", "noappledouble" /* Disable ._. and .DS_Store files */ */
-		       ]
-            .iter()
-            .map(|o| o.as_ref())
-            .collect::<Vec<&OsStr>>();
+        let options = [
+            "-o",
+            "rw",
+            "-o",
+            "auto_unmount",
+            "-o",
+            "noatime",
+            "-o",
+            "iosize=33554432", /* 32MB */
+            "-o",
+            "max_read=33554432",
+            "-o",
+            "max_readahead=8388608", /* 8 MB readahead */
+            "-o",
+            "big_writes",
+            "-o",
+            "fsname=gcsfs",
+            /* "-o", "noappledouble" /* Disable ._. and .DS_Store files */ */
+        ]
+        .iter()
+        .map(|o| o.as_ref())
+        .collect::<Vec<&OsStr>>();
 
         fuser::mount(fs, &mountpoint, &options).unwrap();
         panic!("We should never get here, right...?");
     }
-				   
 
     pub unsafe fn mount_tempdir_ro<'a>(mountpoint: PathBuf) {
         let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
@@ -441,22 +515,25 @@ mod tests {
         //let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
         // One level up to test subdir loading.
         let prefix = "LC08/PRE/044/034/";
-	
-	mount_bucket(object_url.to_string(),
-		     Some(prefix.to_string()),
-		     mountpoint.to_str().unwrap().to_string(),
-		     true);
+
+        mount_bucket(
+            object_url.to_string(),
+            Some(prefix.to_string()),
+            mountpoint.to_str().unwrap().to_string(),
+            true,
+        );
     }
 
     pub unsafe fn mount_tempdir_rw<'a>(mountpoint: PathBuf) {
         let object_url = "https://www.googleapis.com/storage/v1/b/boulos-rustgcs/o";
 
-	mount_bucket(object_url.to_string(),
-		     None,
-		     mountpoint.to_str().unwrap().to_string(),
-		     false);
+        mount_bucket(
+            object_url.to_string(),
+            None,
+            mountpoint.to_str().unwrap().to_string(),
+            false,
+        );
     }
-	
 
     #[test]
     fn just_mount<'a>() {
@@ -467,7 +544,9 @@ mod tests {
         let dir = TempDir::new("just_mount").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| { unsafe { mount_tempdir_ro(mnt); } });
+        let daemon = thread::spawn(|| unsafe {
+            mount_tempdir_ro(mnt);
+        });
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
     }
@@ -481,7 +560,9 @@ mod tests {
         let dir = TempDir::new("mount_and_read").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| { unsafe { mount_tempdir_ro(mnt); } });
+        let daemon = thread::spawn(|| unsafe {
+            mount_tempdir_ro(mnt);
+        });
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
@@ -507,7 +588,9 @@ mod tests {
         let dir = TempDir::new("mount_and_write").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| { unsafe { mount_tempdir_rw(mnt); } });
+        let daemon = thread::spawn(|| unsafe {
+            mount_tempdir_rw(mnt);
+        });
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
@@ -522,7 +605,6 @@ mod tests {
         info!(" got back {:#?}", result);
         drop(daemon);
     }
-    
 
     #[test]
     fn mount_and_ls<'a>() {
@@ -537,13 +619,14 @@ mod tests {
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
 
-        let fs = thread::spawn(|| { unsafe { mount_tempdir_ro(mnt); } });
+        let fs = thread::spawn(|| unsafe {
+            mount_tempdir_ro(mnt);
+        });
         info!("mounted fs at {} on thread {:#?}", mnt_str, fs);
         info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
         std::thread::sleep(Duration::from_millis(250));
         info!("Awake!");
         run_ls(&mnt_str);
-
 
         let subdir = format!("{}/{}", mnt_str, "LC80440342013170LGN00");
         info!("now ls in the subdir {}", subdir);
@@ -560,7 +643,9 @@ mod tests {
         let dir = TempDir::new("mount_and_cp").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| { unsafe { mount_tempdir_ro(mnt); } });
+        let daemon = thread::spawn(|| unsafe {
+            mount_tempdir_ro(mnt);
+        });
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
@@ -568,11 +653,14 @@ mod tests {
         std::thread::sleep(Duration::from_millis(250));
         info!("Awake!");
 
-
         let tif_file = "LC80440342017101LGN00_B7.TIF";
         let sub_dir = "LC80440342017101LGN00";
         let full_path = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
-	let dst_path = format!("{}/{}", dirs::home_dir().unwrap().to_str().unwrap(), tif_file);
+        let dst_path = format!(
+            "{}/{}",
+            dirs::home_dir().unwrap().to_str().unwrap(),
+            tif_file
+        );
 
         let stat_time = std::time::Instant::now();
         info!("Calling stat to trigger init");
