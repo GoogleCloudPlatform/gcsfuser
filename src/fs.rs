@@ -1,6 +1,6 @@
 use fuser::{FileType, FileAttr, Filesystem, KernelConfig, Request, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry};
 use fuser::FUSE_ROOT_ID;
-use libc::{ENOENT};
+use libc::{EIO, ENOENT};
 use rayon::scope;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -47,7 +47,10 @@ pub struct GCSFS {
     gcs_prefix: Option<String>,
 
     // Persistent client
-    gcs_client: reqwest::blocking::Client,
+    gcs_client: super::bucket::GcsHttpClient,
+
+    // And our runtime for waiting out async.
+    tokio_rt: tokio::runtime::Runtime,
 }
 
 impl GCSFS {
@@ -62,7 +65,8 @@ impl GCSFS {
             inode_counter: Mutex::new(0),
             base_object_url: object_url,
             gcs_prefix: prefix,
-            gcs_client: super::bucket::new_client().unwrap(),
+            gcs_client: super::bucket::new_client(),
+	    tokio_rt: tokio::runtime::Runtime::new().unwrap(),
         }
     }
 
@@ -282,12 +286,26 @@ impl Filesystem for GCSFS {
         debug!("Trying to read() {} on {} at offset {}", _size, inode, offset);
         if let Some(obj) = self.inode_to_obj.read().unwrap().get(&inode) {
             debug!("  Performing read for obj: {:#?}", obj);
-            let bytes = super::bucket::get_bytes_with_client(&self.gcs_client, obj, offset as u64, _size as u64).unwrap_or(vec![]);
-            reply.data(bytes.as_slice());
-        } else {
-            debug!("  read FAILED, inode {} didn't return a GCS Object", inode);
-            reply.error(ENOENT);
-        }
+            let result = self.tokio_rt.block_on(async {
+		super::bucket::get_bytes_with_client(&self.gcs_client,
+						     obj,
+						     offset as u64,
+						     _size as u64).await
+	    });
+
+	    match result {
+		Ok(bytes) => {
+		    reply.data(&bytes);
+		},
+		Err(e) => {
+		    debug!("  get_bytes failed. Error {:#?}", e);
+		    reply.error(EIO);
+		}
+	    }
+	} else {
+	    debug!("  failed to find the object for inode {}", inode);
+	    reply.error(ENOENT);
+	}
     }
 
     fn readdir(&mut self, _req: &Request, inode: Inode, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
@@ -400,13 +418,14 @@ mod tests {
         info!("Attempting to mount gcsfs @ {}", mountpoint);
         let options = ["-o", "rw",
 		       "-o", "auto_unmount",
-		       "-o", "iosize=33554432" /* 32MB */,
-                       "-o", "async",
                        "-o", "noatime",
+		       "-o", "iosize=33554432" /* 32MB */,
                        "-o", "max_read=33554432",
                        "-o", "max_readahead=8388608" /* 8 MB readahead */,
-                       "-o", "noappledouble" /* Disable ._. and .DS_Store files */
-                       /* "iosize=4194304" */, /*"-o", "fsname=gcsfs", "-o", "big_writes" */]
+		       "-o", "big_writes",
+		       "-o", "fsname=gcsfs",
+                       /* "-o", "noappledouble" /* Disable ._. and .DS_Store files */ */
+		       ]
             .iter()
             .map(|o| o.as_ref())
             .collect::<Vec<&OsStr>>();

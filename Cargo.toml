@@ -9,11 +9,15 @@ description = "A library for accessing Google Cloud Storage via its JSON API."
 license = "Apache-2.0"
 
 [dependencies]
+bytes = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "3.0"
 env_logger = "*"
 fuser = { git = "https://github.com/cberner/fuser" }
+futures = "0.3.8"
 http = "*"
+hyper = { version = "0.14.*", features = [ "http1", "http2", "client", "runtime" ] }
+hyper-rustls = "0.22.*"
 lazy_static = "*"
 libc = "*"
 log = "*"
@@ -28,4 +32,6 @@ serde_with = "*"
 tame-oauth = "*"
 tempdir = "*"
 time = "*"
+tokio = { version = "1.0", features = ["full"] }
+tracing = { version = "0.1", features = ["log"] }
 url = "*"

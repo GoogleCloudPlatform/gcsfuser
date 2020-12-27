@@ -1,14 +1,22 @@
+extern crate http;
+extern crate hyper;
+extern crate hyper_rustls;
 extern crate reqwest;
 extern crate serde;
 extern crate serde_json;
 extern crate serde_with;
+extern crate tokio;
 extern crate url;
 
 use url::Url;
 use lazy_static::lazy_static;
 use tame_oauth::gcp::prelude::*;
 use chrono::{DateTime, Utc};
+use std::convert::TryInto;
 
+pub type GcsHttpClient =
+    hyper::client::Client<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>,
+			  hyper::Body>;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -46,7 +54,10 @@ pub struct ListObjectsResponse {
 #[derive(Debug)]
 pub enum HttpError {
     Transport(reqwest::Error),
+    Hyper(hyper::Error),
     Generic(http::Error),
+    Uri,
+    Body
 }
 
 impl From<reqwest::Error> for HttpError {
@@ -55,11 +66,24 @@ impl From<reqwest::Error> for HttpError {
     }
 }
 
+impl From<hyper::Error> for HttpError {
+    fn from(err: hyper::Error) -> Self {
+	HttpError::Hyper(err)
+    }
+}
+
+impl From<http::uri::InvalidUri> for HttpError {
+    fn from(_: http::uri::InvalidUri) -> Self {
+	HttpError::Uri
+    }
+}
+
 impl From<http::Error> for HttpError {
     fn from(err: http::Error) -> Self {
 	HttpError::Generic(err)
     }
 }
+
 
 
 lazy_static!{
@@ -74,12 +98,13 @@ lazy_static!{
     };
 }
 
-pub fn new_client() -> Result<reqwest::blocking::Client, reqwest::Error> {
+pub fn new_client() -> GcsHttpClient {
     // NOTE(boulos): Previously, I was passing some default headers
     // here. Now that bearer_auth is per request, this is less needed,
     // but we can change that later.
-    return reqwest::blocking::Client::builder()
-        .build();
+    let https = hyper_rustls::HttpsConnector::with_native_roots();
+    hyper::Client::builder()
+	.build::<_, hyper::Body>(https)
 }
 
 
@@ -90,8 +115,7 @@ pub fn do_http_via_reqwest(req: http::Request<Vec<u8>>) -> Result<http::Response
 
     assert_eq!(parts.method, http::Method::POST);
 
-    let client = new_client()?;
-
+    let client = reqwest::blocking::Client::new();
     let uri = parts.uri.to_string();
 
     // Go from http::Request => a POST via reqwest
@@ -141,51 +165,71 @@ pub fn get_token() -> Result<String, HttpError> {
     }
 }
 
+async fn do_async_request(client: GcsHttpClient,
+			  request: hyper::Request<hyper::Body>) -> Result<hyper::body::Bytes, HttpError> {
 
+    let mut response = client.request(request).await.unwrap();
+    debug!("{:#?}", response);
+    Ok(hyper::body::to_bytes(response).await.unwrap())
+}
 
-fn get_bucket(url: Url) -> Result<Bucket, HttpError> {
+async fn get_bucket(url: Url) -> Result<Bucket, HttpError> {
     debug!("Looking to request: {:#?}", url);
 
-    let client = new_client()?;
+    let client = new_client();
     let token = get_token()?;
 
-    let mut response = client.get(url)
-        .bearer_auth(token)
-        .send()
-        .expect("Failed to send request");
+    let uri: hyper::Uri = url.into_string().parse()?;
 
-    debug!("{:#?}", response);
+    let body = hyper::Body::default();
 
-    let bucket = response.json::<Bucket>();
+    let request = hyper::Request::builder()
+	.uri(uri)
+	.header(http::header::AUTHORIZATION, format!("Bearer {}", token))
+	.body(body)
+	.expect("Failed to construct request");
+
+    debug!("{:#?}", request);
+
+    let bytes = do_async_request(client, request).await.unwrap();
+
+    let bucket: Bucket = serde_json::from_slice(&bytes).unwrap();
     debug!("{:#?}", bucket);
-    return bucket.map_err(HttpError::Transport)
+    Ok(bucket)
 }
 
-fn get_object(url: Url) -> Result<Object, HttpError> {
+async fn get_object(url: Url) -> Result<Object, HttpError> {
     debug!("Looking to request: {:#?}", url);
 
-    let client = new_client()?;
+    let client = new_client();
     let token = get_token()?;
+    let uri: hyper::Uri = url.into_string().parse()?;
 
-    let mut response = client.get(url)
-        .bearer_auth(token)
-        .send()
-        .expect("Failed to send request");
+    let body = hyper::Body::default();
 
+    let request = hyper::Request::builder()
+	.uri(uri)
+	.header(http::header::AUTHORIZATION, format!("Bearer {}", token))
+	.body(body)
+	.expect("Failed to construct request");
+
+    let mut response = client.request(request).await.unwrap();
     debug!("{:#?}", response);
 
-    let object = response.json::<Object>();
+    let bytes = hyper::body::to_bytes(response).await.unwrap();
+
+    let object: Object = serde_json::from_slice(&bytes).unwrap();
     debug!("{:#?}", object);
-    return object.map_err(HttpError::Transport)
+    Ok(object)
 }
 
 
-pub fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, HttpError> {
-    let client = new_client()?;
-    return get_bytes_with_client(&client, obj, offset, how_many);
+async fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, HttpError> {
+    let client = new_client();
+    return get_bytes_with_client(&client, obj, offset, how_many).await;
 }
 
-pub fn get_bytes_with_client(client: &reqwest::blocking::Client, obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, HttpError> {
+pub async fn get_bytes_with_client(client: &GcsHttpClient, obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, HttpError> {
     debug!("Asking for {} bytes at {} from the origin for {} (self link = {}", how_many, offset, obj.name, obj.self_link);
 
     // Use the self_link from the object as the url, but add ?alt=media
@@ -198,16 +242,35 @@ pub fn get_bytes_with_client(client: &reqwest::blocking::Client, obj: &Object, o
 
     let token = get_token()?;
 
-    let mut response = client.get(object_url)
-        .header(reqwest::header::RANGE, byte_range)
-        .bearer_auth(token)
-        .send()
-        .expect("Failed to send request");
+    let uri: hyper::Uri = object_url.into_string().parse()?;
 
-    let mut buf: Vec<u8> = vec![];
-    let written = response.copy_to(&mut buf)?;
-    debug!("Got back {} bytes. Took {:#?}", written, now.elapsed());
-    Ok(buf)
+    let body = hyper::Body::default();
+
+    let request = http::Request::builder()
+	.uri(uri)
+	.header(http::header::AUTHORIZATION, format!("Bearer {}", token))
+        // NOTE(boulos): RANGE *not* CONTENT-RANGE.
+	// https://cloud.google.com/storage/docs/xml-api/reference-headers#range
+	.header(http::header::RANGE, byte_range)
+	.body(body)
+	.expect("Failed to construct request");
+    debug!("Performing range request {:#?}", request);
+
+    let mut response = client.request(request).await.unwrap();
+
+    let written = hyper::body::to_bytes(response).await.unwrap();
+    debug!("Got back {} bytes. Took {:#?}", written.len(), now.elapsed());
+
+    // Range requests *can* be ignored and given a 200 "here's the
+    // whole thing". If we got back more bytes than expected, trim.
+    if written.len() > how_many.try_into().unwrap() {
+	let start: usize = offset.try_into().unwrap();
+	let how_many_usize: usize = how_many.try_into().unwrap();
+	let end: usize = start + how_many_usize - 1;
+	Ok(written.slice(start..end).to_vec())
+    } else {
+	Ok(written.to_vec())
+    }
 }
 
 fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, token: Option<&str>) -> Result<ListObjectsResponse, HttpError> {
@@ -226,8 +289,7 @@ fn _do_one_list_object(bucket: &str, prefix: Option<&str>, delim: Option<&str>, 
     }
 
     let mut op = || -> Result<reqwest::blocking::Response, HttpError> {
-
-        let client = new_client()?;
+        let client = reqwest::blocking::Client::new();
 	let token = get_token()?;
 
         let mut response = client.get(list_url)
@@ -292,52 +354,67 @@ pub fn list_objects(bucket: &str, prefix: Option<&str>, delim: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    extern crate env_logger;
+    use std::sync::Once;
+    static START: Once = Once::new();
 
-    #[test]
-    fn get_landsat() {
+    #[tokio::test(flavor="multi_thread")]
+    async fn get_landsat() {
+	START.call_once(|| {
+            env_logger::init();
+        });
+
         let landsat_url = Url::parse(
             "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat"
         ).unwrap();
-        get_bucket(landsat_url);
+
+	let bucket = get_bucket(landsat_url).await.unwrap();
+	println!("Got back bucket {:#?}", bucket)
     }
 
-    #[test]
-    fn get_private_bucket() {
+    #[tokio::test(flavor="multi_thread")]
+    async fn get_private_bucket() {
+	START.call_once(|| {
+            env_logger::init();
+        });
+
         let bucket_url = Url::parse(
             "https://www.googleapis.com/storage/v1/b/boulos-vm-ml"
         ).unwrap();
-        get_bucket(bucket_url);
+	
+	let bucket = get_bucket(bucket_url).await.unwrap();	
+	println!("Got back bucket {:#?}", bucket)
     }
 
-    #[test]
-    fn get_private_object() {
+    #[tokio::test(flavor="multi_thread")]
+    async fn get_private_object() {
         let object_url = Url::parse(
             "https://www.googleapis.com/storage/v1/b/boulos-hadoop/o/bdutil-staging%2fhadoop-m%2f20150202-172447-58j%2fbq-mapred-template.xml"
         ).unwrap();
-        let object: Object = get_object(object_url).unwrap();
+        let object: Object = get_object(object_url).await.unwrap();
         println!("Object has {} bytes", object.size);
 
-        let bytes: Vec<u8> = get_bytes(&object, 0, 769).unwrap();
+        let bytes: Vec<u8> = get_bytes(&object, 0, 769).await.unwrap();
         println!("Got back:\n {}", String::from_utf8(bytes).unwrap());
 
-        let offset_bytes: Vec<u8> = get_bytes(&object, 6, 769).unwrap();
+        let offset_bytes: Vec<u8> = get_bytes(&object, 6, 769).await.unwrap();
         println!("Got back:\n {}", String::from_utf8(offset_bytes).unwrap());
     }
 
-    #[test]
-    fn get_public_object() {
+    #[tokio::test(flavor="multi_thread")]
+    async fn get_public_object() {
         let object_url = Url::parse(
             "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2FPRE%2F044%2F034%2FLC80440342017101LGN00%2FLC80440342017101LGN00_MTL.txt"
         ).unwrap();
-        let object: Object = get_object(object_url).unwrap();
+        let object: Object = get_object(object_url).await.unwrap();
         println!("Object has {} bytes", object.size);
 
 	println!("Object debug is {:#?}", object);
 
-        let bytes: Vec<u8> = get_bytes(&object, 0, 4096).unwrap();
+        let bytes: Vec<u8> = get_bytes(&object, 0, 4096).await.unwrap();
         println!("Got back:\n {}", String::from_utf8(bytes).unwrap());
 
-        let offset_bytes: Vec<u8> = get_bytes(&object, 4099, 1024).unwrap();
+        let offset_bytes: Vec<u8> = get_bytes(&object, 4099, 1024).await.unwrap();
         println!("Got back:\n {}", String::from_utf8(offset_bytes).unwrap());
     }
 
