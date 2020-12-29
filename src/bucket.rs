@@ -388,14 +388,14 @@ pub fn list_objects(
 mod tests {
     use super::*;
     extern crate env_logger;
-    use std::sync::Once;
-    static START: Once = Once::new();
+    fn init() {
+        // https://docs.rs/env_logger/0.8.2/env_logger/index.html#capturing-logs-in-tests
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn get_landsat() {
-        START.call_once(|| {
-            env_logger::init();
-        });
+        init();
 
         let landsat_url =
             Url::parse("https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat").unwrap();
@@ -406,9 +406,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn get_private_bucket() {
-        START.call_once(|| {
-            env_logger::init();
-        });
+        init();
 
         let bucket_url =
             Url::parse("https://www.googleapis.com/storage/v1/b/boulos-vm-ml").unwrap();
@@ -419,6 +417,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn get_private_object() {
+        init();
+
         let object_url = Url::parse(
             "https://www.googleapis.com/storage/v1/b/boulos-hadoop/o/bdutil-staging%2fhadoop-m%2f20150202-172447-58j%2fbq-mapred-template.xml"
         ).unwrap();
@@ -434,6 +434,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn get_public_object() {
+        init();
+
         let object_url = Url::parse(
             "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2FPRE%2F044%2F034%2FLC80440342017101LGN00%2FLC80440342017101LGN00_MTL.txt"
         ).unwrap();
@@ -451,6 +453,8 @@ mod tests {
 
     #[test]
     fn test_list_objects() {
+        init();
+
         let object_url = "https://www.googleapis.com/storage/v1/b/boulos-hadoop/o";
         let prefix = "bdutil-staging";
         let delim = "/";
@@ -471,6 +475,8 @@ mod tests {
 
     #[test]
     fn test_list_paginated() {
+        init();
+
         let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
         let prefix = "LC08/PRE/044/034/";
         let delim = "/";

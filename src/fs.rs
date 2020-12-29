@@ -413,12 +413,14 @@ mod tests {
     use std::io::Read;
     use std::path::PathBuf;
     use std::process::Command;
-    use std::sync::Once;
     use std::thread;
     use std::time;
     use tempdir::TempDir;
 
-    static START: Once = Once::new();
+    fn init() {
+        // https://docs.rs/env_logger/0.8.2/env_logger/index.html#capturing-logs-in-tests
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
 
     fn run_ls(cwd: &str) {
         info!("about to run ls -lFGa in cwd: {}", cwd);
@@ -537,9 +539,7 @@ mod tests {
 
     #[test]
     fn just_mount<'a>() {
-        START.call_once(|| {
-            env_logger::init();
-        });
+        init();
 
         let dir = TempDir::new("just_mount").unwrap();
         let mnt = dir.into_path();
@@ -553,9 +553,7 @@ mod tests {
 
     #[test]
     fn mount_and_read<'a>() {
-        START.call_once(|| {
-            env_logger::init();
-        });
+        init();
 
         let dir = TempDir::new("mount_and_read").unwrap();
         let mnt = dir.into_path();
@@ -581,9 +579,7 @@ mod tests {
     #[test]
     #[ignore] // Not ready yet!
     fn mount_and_write<'a>() {
-        START.call_once(|| {
-            env_logger::init();
-        });
+        init();
 
         let dir = TempDir::new("mount_and_write").unwrap();
         let mnt = dir.into_path();
@@ -608,9 +604,7 @@ mod tests {
 
     #[test]
     fn mount_and_ls<'a>() {
-        START.call_once(|| {
-            env_logger::init();
-        });
+        init();
 
         // Mount the filesystem and run ls.
         info!("Running mount_and_ls");
@@ -636,9 +630,7 @@ mod tests {
 
     #[test]
     fn mount_and_cp<'a>() {
-        START.call_once(|| {
-            env_logger::init();
-        });
+        init();
 
         let dir = TempDir::new("mount_and_cp").unwrap();
         let mnt = dir.into_path();
