@@ -15,7 +15,6 @@ extern crate reqwest;
 extern crate libc;
 extern crate rayon;
 extern crate time;
-extern crate tempdir;
 
 mod bucket;
 mod fs;

@@ -1,16 +1,12 @@
-use fuser::FUSE_ROOT_ID;
 use fuser::{
-    FileAttr, FileType, Filesystem, KernelConfig, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
-    Request,
+    FileAttr, FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData,
+    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyWrite, Request,
 };
-use libc::{EIO, ENOENT};
-use rayon::scope;
+use libc::{EIO, ENOENT, ENOTDIR};
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::thread::sleep;
-use std::time;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::Object;
@@ -37,15 +33,16 @@ pub struct GCSFS {
     // From inode => the path name
     directory_map: RwLock<HashMap<Inode, PsuedoDir>>,
 
-    // From string => inode for any entry.
-    inode_map: RwLock<HashMap<String, Inode>>,
-
-    // Sigh. It'd be nice to just be able to consistently generate an
-    // inode from a path...
+    // We probably need some way to implement forget, but whatever.
     inode_counter: Mutex<Inode>,
 
+    // So we can refer into the file handle map.
+    fh_counter: AtomicU64,
+
+    file_handles: RwLock<HashMap<u64, super::bucket::ResumableUploadCursor>>,
+
     // GCS configuration
-    base_object_url: String,
+    gcs_bucket: String,
     gcs_prefix: Option<String>,
 
     // Persistent client
@@ -56,16 +53,17 @@ pub struct GCSFS {
 }
 
 impl GCSFS {
-    // TODO(boulos): Take the bucket, prefix, maybe even auth token?
-    pub fn new(object_url: String, prefix: Option<String>) -> Self {
+    pub fn new(bucket: String, prefix: Option<String>) -> Self {
         info!("Making a GCSFS!");
         GCSFS {
             inode_to_attr: RwLock::new(HashMap::new()),
             inode_to_obj: RwLock::new(HashMap::new()),
             directory_map: RwLock::new(HashMap::new()),
-            inode_map: RwLock::new(HashMap::new()),
             inode_counter: Mutex::new(0),
-            base_object_url: object_url,
+            // Start at 1, so we can hand out fh=0 as "no fh"
+            fh_counter: AtomicU64::new(1),
+            file_handles: RwLock::new(HashMap::new()),
+            gcs_bucket: bucket,
             gcs_prefix: prefix,
             gcs_client: super::bucket::new_client(),
             tokio_rt: tokio::runtime::Runtime::new().unwrap(),
@@ -77,6 +75,19 @@ impl GCSFS {
         let mut data = self.inode_counter.lock().unwrap();
         *data += 1;
         return *data;
+    }
+
+    fn make_fh(&self, cursor: super::bucket::ResumableUploadCursor) -> u64 {
+        let fh = self.fh_counter.fetch_add(1, Ordering::SeqCst);
+        // Put the cursor into our hash map.
+        self.file_handles.write().unwrap().insert(fh, cursor);
+        // return the handle.
+        fh
+    }
+
+    fn drop_fh(&self, fh: u64) {
+        let _ = self.file_handles.write().unwrap().remove(&fh);
+        return;
     }
 
     fn load_file(&self, full_path: String, obj: Object) -> Inode {
@@ -98,7 +109,7 @@ impl GCSFS {
             ctime: ctime,
             crtime: ctime,
             kind: FileType::RegularFile,
-            perm: 0o755,
+            perm: 0o755, /* Mark everything as 755 */
             nlink: 1,
             uid: 501,
             gid: 20,
@@ -110,19 +121,13 @@ impl GCSFS {
 
         self.inode_to_attr.write().unwrap().insert(inode, file_attr);
         self.inode_to_obj.write().unwrap().insert(inode, obj);
-        self.inode_map.write().unwrap().insert(full_path, inode);
 
         return inode;
     }
 
     // Given a bucket, and a prefix (the directory), load it
     fn load_dir(&self, prefix: Option<String>, parent: Option<Inode>) -> Inode {
-        // TODO(boulos): Gross. Because load_dir is mutable (it's
-        // changing the struct!) and there's no way to mark the config
-        // as immutable, I have to lie or make a copy.
-        let bucket_url = self.base_object_url.clone();
-        let dir_inode = self.get_inode();
-
+        let bucket_clone = self.gcs_bucket.clone();
         let prefix_clone = prefix.clone();
 
         let prefix_for_load: String = match prefix {
@@ -134,12 +139,13 @@ impl GCSFS {
 
         // Always use / as delim.
         let (single_level_objs, subdirs) = list_objects(
-            bucket_url.as_ref(),
+            bucket_clone.as_ref(),
             prefix_clone.as_ref().map(String::as_str),
             Some("/"),
         )
         .unwrap();
 
+        let dir_inode = self.get_inode();
         let dir_time: SystemTime = UNIX_EPOCH + Duration::new(1534812086, 0); // 2018-08-20 15:41 Pacific
 
         let dir_attr: FileAttr = FileAttr {
@@ -220,7 +226,6 @@ impl GCSFS {
             // strip the trailing slash.
             let last_slash = dir.len() - 1;
             let dir_str = dir[base_dir_index..last_slash].to_string();
-            let cloned = Arc::clone(&inodes);
             let read_context = inodes.read().unwrap();
 
             dir_entries.push((dir_str, read_context[i]));
@@ -260,10 +265,7 @@ impl Filesystem for GCSFS {
 
         // Trigger a load from the root of the bucket
         let root_inode = self.load_dir(prefix, None);
-        self.inode_map
-            .write()
-            .unwrap()
-            .insert(".".to_string(), root_inode);
+        debug!("root inode => {}", root_inode);
 
         Ok(())
     }
@@ -398,24 +400,314 @@ impl Filesystem for GCSFS {
             reply.error(ENOENT);
         }
     }
+
+    fn create(
+        &mut self,
+        req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        flags: i32,
+        reply: ReplyCreate,
+    ) {
+        debug!(
+            "create(parent_dir = {}, path = {:#?}, mode = {}, flags = {:o})",
+            parent, name, mode, flags
+        );
+
+        let file_type = mode & libc::S_IFMT as u32;
+
+        if file_type != libc::S_IFREG && file_type != libc::S_IFDIR {
+            warn!(
+                "create called for file_type {}. But we only handle FILE/DIR",
+                file_type
+            );
+            reply.error(libc::EINVAL);
+            return;
+        }
+
+        // Grab a scoped lock for the directory map (we'll update the directory)
+        let mut dir_map_lock = self.directory_map.write().unwrap();
+
+        // Find the parent in the directory map.
+        let mut parent_ent = dir_map_lock.get_mut(&parent);
+
+        // NOTE(boulos): I think FUSE does this check already.
+        if parent_ent.is_none() {
+            debug!(" -- warning/error:fuse_create called w/o parent directory");
+            reply.error(ENOTDIR);
+            return;
+        }
+
+        let mut parent_dir = parent_ent.unwrap();
+        let mut dir_entries = &mut parent_dir.entries;
+
+        let search_name = name.to_str().unwrap().to_string();
+        let full_name = match parent_dir.name.len() {
+            // Don't include the leading / for the root directory.
+            0 => search_name.clone(),
+            _ => format!("{}/{}", parent_dir.name, search_name),
+        };
+
+        #[cfg(debug)]
+        // FUSE isn't supposed to call this for existing entries. Double check in debug mode.
+        for child_pair in dir_entries.iter() {
+            if child_pair.0 == search_name {
+                debug!(" -- warning/error: File {} already exists!", search_name);
+                reply.error(EEXIST);
+                return;
+            }
+        }
+
+        // Make a new inode for our new file or directory.
+        let inode = self.get_inode();
+        let now = SystemTime::now();
+
+        let kind = match file_type {
+            libc::S_IFREG => FileType::RegularFile,
+            libc::S_IFDIR => FileType::Directory,
+            _ => unreachable!(),
+        };
+
+        // If it's going to be a regular file, try to initiate the
+        // Upload. If this fails, we've burned an inode, but whatever.
+        let fh = match kind {
+            FileType::RegularFile => {
+                let create_result = self.tokio_rt.block_on(async {
+                    super::bucket::create_object_with_client(
+                        &self.gcs_client,
+                        &self.gcs_bucket,
+                        &full_name,
+                    )
+                    .await
+                });
+
+                if create_result.is_err() {
+                    // We failed (and warned internally). Bubble up an EIO.
+                    reply.error(libc::EIO);
+                    return;
+                }
+
+                // Make ourselves a file handle!
+                self.make_fh(create_result.unwrap())
+            }
+            // Directories don't need FHs for now.
+            _ => 0,
+        };
+
+        let attrs: FileAttr = FileAttr {
+            ino: inode,
+            size: 0,
+            blocks: 0,
+            atime: now,
+            mtime: now,
+            ctime: now,
+            crtime: now,
+            kind: kind,
+            perm: 0o755, /* We could use mode, but whatever */
+            nlink: match kind {
+                FileType::RegularFile => 1,
+                FileType::Directory => 2,
+                _ => unreachable!(),
+            },
+            uid: req.uid(),
+            gid: req.gid(),
+            rdev: 0,
+            flags: 0,
+            blksize: 512,
+            padding: 0,
+        };
+
+        // Put the node into our inode map
+        self.inode_to_attr.write().unwrap().insert(inode, attrs);
+
+        // Put the node into our parent directory listing.
+        dir_entries.push((search_name.clone(), inode));
+
+        if kind == FileType::Directory {
+            // Make our own PsuedoDir
+            let sub_entries: Vec<(String, Inode)> = vec![
+                (String::from("."), inode), /* Self link */
+                (String::from(".."), parent as Inode),
+            ];
+
+            dir_map_lock.insert(
+                inode,
+                PsuedoDir {
+                    name: search_name.clone(),
+                    entries: sub_entries,
+                },
+            );
+        } else {
+            // Otherwise, maybe prepare a stub Object?
+        }
+
+        reply.created(&TTL_30s, &attrs, 0, fh, 0);
+    }
+
+    fn write(
+        &mut self,
+        _req: &Request<'_>,
+        inode: u64,
+        fh: u64,
+        offset: i64,
+        data: &[u8],
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyWrite,
+    ) {
+        let now = SystemTime::now();
+        debug!(
+            "Got a write request. inode={}, fh={}, offset={}",
+            inode, fh, offset
+        );
+
+        let fh_clone = fh.clone();
+        let mut fh_map = self.file_handles.write().unwrap();
+        let mut cursor_or_none = fh_map.get_mut(&fh_clone);
+
+        if cursor_or_none.is_none() {
+            error!("write(): didn't find the fh {}", fh);
+            reply.error(libc::EBADF);
+            return;
+        }
+
+        let inode_clone = inode.clone();
+        let mut attr_map = self.inode_to_attr.write().unwrap();
+        let mut attr_or_none = attr_map.get_mut(&inode_clone);
+        if attr_or_none.is_none() {
+            error!("write(): Didn't find inode {}", inode);
+            reply.error(libc::EBADF);
+            return;
+        }
+
+        let mut cursor = cursor_or_none.unwrap();
+        let remaining = cursor.buffer.capacity() - cursor.buffer.len();
+        let cursor_position = cursor.offset + (cursor.buffer.len() as u64);
+
+        debug!(
+            "cursor has URI {}, offset {}, 'position' {}, and remaining {}",
+            cursor.session_uri, cursor.offset, cursor_position, remaining
+        );
+
+        // Only allow writing at the offset.
+        if (offset as u64) != cursor_position {
+            error!(
+                "Got a write for offset {}. But cursor is at {} (we only support appending",
+                offset, cursor_position
+            );
+            reply.error(libc::EINVAL);
+            return;
+        }
+
+        let result = self.tokio_rt.block_on(async {
+            super::bucket::append_bytes_with_client(&self.gcs_client, cursor, data).await
+        });
+
+        if result.is_err() {
+            reply.error(libc::EIO);
+            return;
+        }
+
+        let len = result.unwrap() as u64;
+
+        // We wrote the bytes! Update our attrs.
+        reply.written(len as u32);
+        let mut attr = attr_or_none.unwrap();
+        // Update our atime/mtime.
+        attr.atime = now;
+        attr.mtime = now;
+        // Update the bytes written.
+        attr.size += len;
+    }
+
+    // NOTE(boulos): Despite the name 'flush', this is called on *close*.
+    fn flush(
+        &mut self,
+        _req: &Request<'_>,
+        inode: u64,
+        fh: u64,
+        _lock_owner: u64,
+        reply: ReplyEmpty,
+    ) {
+        debug!("flush called for inode {} / fh {}", inode, fh);
+        if fh == 0 {
+            // Ignore fh 0
+            reply.ok();
+            return;
+        }
+
+        let now = SystemTime::now();
+
+        let fh_clone = fh.clone();
+        let mut fh_map = self.file_handles.write().unwrap();
+        let mut cursor_or_none = fh_map.get_mut(&fh_clone);
+
+        if cursor_or_none.is_none() {
+            error!("flush(): didn't find the fh {}", fh);
+            reply.error(libc::EBADF);
+            return;
+        }
+
+        let inode_clone = inode.clone();
+        let mut attr_map = self.inode_to_attr.write().unwrap();
+        let mut attr_or_none = attr_map.get_mut(&inode_clone);
+        if attr_or_none.is_none() {
+            error!("flush(): Didn't find inode {}", inode);
+            reply.error(libc::EBADF);
+            return;
+        }
+
+        let mut cursor = cursor_or_none.unwrap();
+        let result = self.tokio_rt.block_on(async {
+            super::bucket::finalize_upload_with_client(&self.gcs_client, cursor).await
+        });
+
+        if result.is_err() {
+            error!("finalze upload failed with err {:#?}", result);
+            reply.error(libc::EIO);
+            return;
+        }
+
+        // We've got an Object now! Update our FileAttr and map.
+        let obj: Object = result.unwrap();
+        debug!("Got back our object! {:#?}", obj);
+
+        let mut attr = attr_or_none.unwrap();
+        // Update our atime/mtime.
+        attr.atime = now;
+        attr.mtime = now;
+        // Finalize the object size.
+        attr.size = obj.size;
+
+        // Put the Object into our map (allownig reads!).
+        self.inode_to_obj.write().unwrap().insert(inode, obj);
+
+        reply.ok();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     extern crate env_logger;
     extern crate tempdir;
+    extern crate tempfile;
 
     use super::*;
     use std;
     use std::env;
+    use std::fs;
     use std::fs::File;
     use std::io;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::process::Command;
     use std::thread;
     use std::time;
     use tempdir::TempDir;
+    use tempfile::NamedTempFile;
 
     fn init() {
         // https://docs.rs/env_logger/0.8.2/env_logger/index.html#capturing-logs-in-tests
@@ -512,14 +804,14 @@ mod tests {
     }
 
     pub unsafe fn mount_tempdir_ro<'a>(mountpoint: PathBuf) {
-        let object_url = "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o";
+        let bucket = "gcp-public-data-landsat";
         // Simple single dir.
         //let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
         // One level up to test subdir loading.
         let prefix = "LC08/PRE/044/034/";
 
         mount_bucket(
-            object_url.to_string(),
+            bucket.to_string(),
             Some(prefix.to_string()),
             mountpoint.to_str().unwrap().to_string(),
             true,
@@ -527,10 +819,10 @@ mod tests {
     }
 
     pub unsafe fn mount_tempdir_rw<'a>(mountpoint: PathBuf) {
-        let object_url = "https://www.googleapis.com/storage/v1/b/boulos-rustgcs/o";
+        let bucket = "boulos-rustgcs";
 
         mount_bucket(
-            object_url.to_string(),
+            bucket.to_string(),
             None,
             mountpoint.to_str().unwrap().to_string(),
             false,
@@ -577,7 +869,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Not ready yet!
     fn mount_and_write<'a>() {
         init();
 
@@ -594,11 +885,23 @@ mod tests {
         std::thread::sleep(Duration::from_millis(250));
         info!("Awake!");
 
-        let txt_file = "mount_and_write.txt";
-        let to_open = format!("{}/{}", mnt_str, txt_file);
-        info!("Try to open '{}'", to_open);
-        let result = fs::write(to_open, "My first words!");
-        info!(" got back {:#?}", result);
+        let mut tmp_file = NamedTempFile::new_in(mnt_str).unwrap();
+        info!("Opened '{:#?}'", tmp_file.path());
+        let mut txt_file = tmp_file.as_file_mut();
+
+        let write_result = txt_file.write_all(b"My first words!");
+        info!(" got back {:#?}", write_result);
+        assert!(write_result.is_ok());
+        // sync the file to see if we have any other errors.
+        let sync_result = txt_file.sync_all();
+        info!(" sync result => {:#?}", sync_result);
+        assert!(sync_result.is_ok());
+        // drop the file to close it.
+        drop(txt_file);
+        info!("Sleeping for 250ms, to wait for the FS to be flush, because shitty");
+        std::thread::sleep(Duration::from_millis(250));
+
+        // Drop the daemon to clean up.
         drop(daemon);
     }
 
