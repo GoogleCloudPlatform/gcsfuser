@@ -906,6 +906,79 @@ mod tests {
     }
 
     #[test]
+    fn write_largefile<'a>() {
+        init();
+
+        let dir = TempDir::new("mount_and_write").unwrap();
+        let mnt = dir.into_path();
+        let mnt_str = String::from(mnt.to_str().unwrap());
+        let daemon = thread::spawn(|| unsafe {
+            mount_tempdir_rw(mnt);
+        });
+
+        info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
+
+        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(250));
+        info!("Awake!");
+
+        let mut tmp_file = NamedTempFile::new_in(mnt_str).unwrap();
+        info!("Opened '{:#?}'", tmp_file.path());
+        let mut file = tmp_file.as_file_mut();
+
+        // Make lots of 0123456789 piles and test out our rounding code.
+        let small_amt = 20;
+        // This should trigger a flush, and then append.
+        let medium_amt = 350 * 1024;
+        // This will fill the buffer and flush.
+        let round_up = 512 * 1024;
+        // This will send several *without* buffering.
+        let several_chunks = 2048 * 1024;
+        // This will then send 256 KiB, leave some of left over for a final close.
+        let plus_leftover = several_chunks + 384 * 1024;
+
+        let small_write: Vec<u8> = (0..small_amt).map(|x| (48 + (x % 10)) as u8).collect();
+        let big_write: Vec<u8> = (small_amt..medium_amt)
+            .map(|x| (48 + (x % 10)) as u8)
+            .collect();
+        let round_up_write: Vec<u8> = (medium_amt..round_up)
+            .map(|x| (48 + (x % 10)) as u8)
+            .collect();
+        let chunk_write: Vec<u8> = (round_up..several_chunks)
+            .map(|x| (48 + (x % 10)) as u8)
+            .collect();
+        let final_write: Vec<u8> = (several_chunks..plus_leftover)
+            .map(|x| (48 + (x % 10)) as u8)
+            .collect();
+
+        let all_writes = vec![
+            small_write,
+            big_write,
+            round_up_write,
+            chunk_write,
+            final_write,
+        ];
+
+        for write_test in all_writes {
+            let write_result = file.write_all(&write_test);
+            info!(" got back {:#?}", write_result);
+            assert!(write_result.is_ok());
+        }
+
+        // sync the file to see if we have any other errors.
+        let sync_result = file.sync_all();
+        info!(" sync result => {:#?}", sync_result);
+        assert!(sync_result.is_ok());
+        // drop the file to close it.
+        drop(file);
+        info!("Sleeping for 250ms, to wait for the FS to be flush, because shitty");
+        std::thread::sleep(Duration::from_millis(250));
+
+        // Drop the daemon to clean up.
+        drop(daemon);
+    }
+
+    #[test]
     fn mount_and_ls<'a>() {
         init();
 
