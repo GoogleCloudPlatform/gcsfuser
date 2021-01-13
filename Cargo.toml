@@ -13,7 +13,7 @@ bytes = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "3.0"
 env_logger = "*"
-fuser = { git = "https://github.com/cberner/fuser" }
+fuser = { version = "0.7", features = ["abi-7-30"] }
 futures = "0.3.8"
 http = "*"
 hyper = { version = "0.14.*", features = [ "http1", "http2", "client", "runtime", "stream"] }

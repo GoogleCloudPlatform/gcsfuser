@@ -2,7 +2,7 @@ use fuser::{
     FileAttr, FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData,
     ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyWrite, Request,
 };
-use libc::{EIO, ENOENT, ENOTDIR};
+use libc::{EIO, ENOENT, ENOTDIR, O_DIRECT};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,8 +14,14 @@ use crate::bucket::list_objects;
 
 pub type Inode = u64;
 
-// TODO(boulos): What's a reasonable TTL? Since we're focused on read-only, let's set at least 30s.
+// TODO(boulos): What's a reasonable TTL? Since we're focused on
+// read-only, let's set at least 30s. Amusingly, Free BSD now treats
+// *all* numbers > 0 as "cache forever" (which is probably what we
+// want, with invalidation)
 const TTL_30s: Duration = Duration::from_secs(30);
+
+// It's not clear if anything cares about this.
+const HARDCODED_BLOCKSIZE: u32 = 512;
 
 struct PsuedoDir {
     name: String,
@@ -93,7 +99,11 @@ impl GCSFS {
     fn load_file(&self, full_path: String, obj: Object) -> Inode {
         let inode = self.get_inode();
 
-        debug!("   GCSFS. Loading {}", full_path);
+        // NOTE(boulos): This is pretty noisy on boot and env_logger doesn't seem to have
+        // some sort of "super noisy debug". So comment in/out if you need to debugg the
+        // loading process.
+
+        //debug!("   GCSFS. Loading {}", full_path);
 
         let mtime: SystemTime = obj.updated.into();
         let ctime: SystemTime = obj.time_created.into();
@@ -115,7 +125,7 @@ impl GCSFS {
             gid: 20,
             rdev: 0,
             flags: 0,
-            blksize: 512,
+            blksize: HARDCODED_BLOCKSIZE,
             padding: 0,
         };
 
@@ -135,7 +145,9 @@ impl GCSFS {
             None => String::from(""),
         };
 
-        debug!("   GCSFS. DIR {}", prefix_for_load);
+        // As above (this is too noisy for debugging regular FS operation).
+
+        //debug!("   GCSFS. DIR {}", prefix_for_load);
 
         // Always use / as delim.
         let (single_level_objs, subdirs) = list_objects(
@@ -163,7 +175,7 @@ impl GCSFS {
             gid: 20,
             rdev: 0,
             flags: 0,
-            blksize: 512,
+            blksize: HARDCODED_BLOCKSIZE,
             padding: 0,
         };
 
@@ -242,7 +254,7 @@ impl GCSFS {
             dir_entries.push((file_str, inode));
         }
 
-        debug!("  Created dir_entries: {:#?}", dir_entries);
+        //debug!("  Created dir_entries: {:#?}", dir_entries);
 
         self.directory_map.write().unwrap().insert(
             dir_inode,
@@ -257,9 +269,10 @@ impl GCSFS {
 }
 
 impl Filesystem for GCSFS {
-    fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> Result<(), i32> {
+    fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), i32> {
         info!("init!");
         debug!("debug_logger: init!");
+        debug!("Kernelconfig is {:#?}", config);
 
         let prefix = self.gcs_prefix.clone();
 
@@ -515,7 +528,7 @@ impl Filesystem for GCSFS {
             gid: req.gid(),
             rdev: 0,
             flags: 0,
-            blksize: 512,
+            blksize: HARDCODED_BLOCKSIZE,
             padding: 0,
         };
 
@@ -750,6 +763,28 @@ mod tests {
         assert!(output.status.success());
     }
 
+    fn run_dd(src_path: &str, dst_path: &str, blksize_bytes: usize, cwd: &str) {
+        info!(
+            "about to run dd if={} of={} bs={} in cwd: {}",
+            src_path, dst_path, blksize_bytes, cwd
+        );
+
+        let now = std::time::Instant::now();
+        let output = Command::new("dd")
+            .arg(format!("bs={}", blksize_bytes))
+            .arg(format!("if={}", src_path))
+            .arg(format!("of={}", dst_path))
+            .current_dir(cwd)
+            .output()
+            .expect("dd failed");
+
+        info!("status: {}", output.status);
+        info!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        info!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        info!("inside run_dd: {:#?}", now.elapsed());
+        assert!(output.status.success());
+    }
+
     fn run_stat(path: &str, cwd: &str) {
         info!("about to run stat {} in cwd: {}", path, cwd);
 
@@ -775,7 +810,6 @@ mod tests {
     ) {
         let fs = GCSFS::new(object_url, prefix);
 
-        info!("Attempting to mount gcsfs @ {}", mountpoint);
         let options = [
             "-o",
             "rw",
@@ -784,20 +818,17 @@ mod tests {
             "-o",
             "noatime",
             "-o",
-            "iosize=33554432", /* 32MB */
-            "-o",
-            "max_read=33554432",
-            "-o",
-            "max_readahead=8388608", /* 8 MB readahead */
-            "-o",
-            "big_writes",
-            "-o",
             "fsname=gcsfs",
             /* "-o", "noappledouble" /* Disable ._. and .DS_Store files */ */
         ]
         .iter()
         .map(|o| o.as_ref())
         .collect::<Vec<&OsStr>>();
+
+        info!(
+            "Attempting to mount gcsfs @ {} with {:#?}",
+            mountpoint, options
+        );
 
         fuser::mount(fs, &mountpoint, &options).unwrap();
         panic!("We should never get here, right...?");
@@ -869,7 +900,80 @@ mod tests {
     }
 
     #[test]
-    fn mount_and_write<'a>() {
+    fn large_read<'a>() {
+        init();
+
+        let dir = TempDir::new("large_read").unwrap();
+        let mnt = dir.into_path();
+        let mnt_str = String::from(mnt.to_str().unwrap());
+        let daemon = thread::spawn(|| unsafe {
+            mount_tempdir_ro(mnt);
+        });
+
+        info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
+
+        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(250));
+        info!("Awake!");
+
+        let tif_file = "LC80440342017101LGN00_B7.TIF";
+        let sub_dir = "LC80440342017101LGN00";
+        let to_open = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
+        info!("Try to open '{}'", to_open);
+
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut fh = std::fs::OpenOptions::new()
+            .read(true)
+            .open(to_open)
+            .expect("Failed to open file");
+
+        let mut buffer = [0; 1024 * 1024];
+        info!("About to read 1MB from {:#?}", fh);
+        let result = fh.read(&mut buffer);
+        info!(" got back {:#?}", result);
+        drop(daemon);
+    }
+
+    #[test]
+    fn direct_read<'a>() {
+        init();
+
+        let dir = TempDir::new("direct_read").unwrap();
+        let mnt = dir.into_path();
+        let mnt_str = String::from(mnt.to_str().unwrap());
+        let daemon = thread::spawn(|| unsafe {
+            mount_tempdir_ro(mnt);
+        });
+
+        info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
+
+        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(250));
+        info!("Awake!");
+
+        let tif_file = "LC80440342017101LGN00_B7.TIF";
+        let sub_dir = "LC80440342017101LGN00";
+        let to_open = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
+        info!("Try to open '{}'", to_open);
+
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut fh = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(to_open)
+            .expect("Failed to open file");
+
+        let mut buffer = [0; 1024 * 1024];
+        info!("About to read 1MB from {:#?}", fh);
+        let result = fh.read(&mut buffer);
+        info!(" got back {:#?}", result);
+        drop(daemon);
+    }
+
+    #[test]
+    fn small_write<'a>() {
         init();
 
         let dir = TempDir::new("mount_and_write").unwrap();
@@ -906,10 +1010,10 @@ mod tests {
     }
 
     #[test]
-    fn write_largefile<'a>() {
+    fn large_write<'a>() {
         init();
 
-        let dir = TempDir::new("mount_and_write").unwrap();
+        let dir = TempDir::new("large_write").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = thread::spawn(|| unsafe {
@@ -969,7 +1073,7 @@ mod tests {
         let sync_result = file.sync_all();
         info!(" sync result => {:#?}", sync_result);
         assert!(sync_result.is_ok());
-        // drop the file to close it.
+        // drop the file to close and unlink it.
         drop(file);
         info!("Sleeping for 250ms, to wait for the FS to be flush, because shitty");
         std::thread::sleep(Duration::from_millis(250));
@@ -1039,6 +1143,44 @@ mod tests {
         run_cp(&full_path, &dst_path, &mnt_str);
 
         println!("cp took {:#?}", now.elapsed());
+        drop(daemon);
+    }
+
+    #[test]
+    fn test_dd<'a>() {
+        init();
+        let dir = TempDir::new("test_dd").unwrap();
+        let mnt = dir.into_path();
+        let mnt_str = String::from(mnt.to_str().unwrap());
+        let daemon = thread::spawn(|| unsafe {
+            mount_tempdir_ro(mnt);
+        });
+
+        info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
+
+        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(250));
+        info!("Awake!");
+
+        let tif_file = "LC80440342017101LGN00_B7.TIF";
+        let sub_dir = "LC80440342017101LGN00";
+        let full_path = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
+
+        let dst_path = format!(
+            "{}/{}",
+            dirs::home_dir().unwrap().to_str().unwrap(),
+            tif_file
+        );
+
+        let stat_time = std::time::Instant::now();
+        info!("Calling stat to trigger init");
+        run_stat(&full_path, &mnt_str);
+        info!("stat completed in {:#?}", stat_time.elapsed());
+
+        let now = std::time::Instant::now();
+        run_dd(&full_path, &dst_path, 1 * 1024 * 1024, &mnt_str);
+
+        println!("dd took {:#?}", now.elapsed());
         drop(daemon);
     }
 }
