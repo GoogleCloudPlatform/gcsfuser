@@ -1,5 +1,5 @@
 [package]
-name = "rust-gcs"
+name = "gcsfuser"
 version = "0.1.0"
 authors = ["Solomon Boulos <boulos@google.com>"]
 # We want async/await
@@ -12,27 +12,27 @@ license = "Apache-2.0"
 bytes = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "3.0"
-env_logger = "*"
+env_logger = "0.8"
 fuser = { version = "0.7", features = ["abi-7-30"] }
 futures = "0.3.8"
-http = "*"
+http = "0.2"
 hyper = { version = "0.14.*", features = [ "http1", "http2", "client", "runtime", "stream"] }
 hyper-rustls = "0.22.*"
-lazy_static = "*"
-libc = "*"
-log = "*"
-oauth2 = "*"
-openssl = "*"
-rayon = "*"
+lazy_static = "1.4"
+libc = "0.2"
+log = "0.4"
+oauth2 = "2.0"
+openssl = "0.10"
+rayon = "1.5"
 reqwest = { version = "0.10.8", features = ["blocking", "json"] }
-serde = "*"
-serde_derive = "*"
-serde_json = "*"
-serde_with = "*"
-tame-oauth = "*"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+serde_with = "1.6"
+tame-oauth = "0.4"
 tempdir = "0.3"
 tempfile = "3.1"
-time = "*"
+time = "0.1"
 tokio = { version = "1.0", features = ["full"] }
 tracing = { version = "0.1", features = ["log"] }
-url = "*"
+url = "2.1"
