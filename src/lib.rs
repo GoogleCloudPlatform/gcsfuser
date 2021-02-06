@@ -18,7 +18,8 @@ extern crate serde_derive;
 extern crate serde;
 extern crate serde_json;
 
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 
 extern crate env_logger;
 
@@ -30,7 +31,9 @@ extern crate libc;
 extern crate rayon;
 extern crate time;
 
+mod auth;
 mod bucket;
+mod errors;
 mod fs;
 //mod object;
 

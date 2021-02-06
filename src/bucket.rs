@@ -24,9 +24,10 @@ extern crate url;
 
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
-use lazy_static::lazy_static;
 use std::convert::TryInto;
-use tame_oauth::gcp::prelude::*;
+
+use crate::auth::get_token;
+use crate::errors::HttpError;
 use url::Url;
 
 pub type GcsHttpClient =
@@ -73,129 +74,12 @@ pub struct ResumableUploadCursor {
     pub buffer: Vec<u8>,
 }
 
-// Add a simple union type of "Either reqwest::Error" (our Transport)
-// or generic Http errors.
-#[derive(Debug)]
-pub enum HttpError {
-    Transport(reqwest::Error),
-    Hyper(hyper::Error),
-    Generic(http::Error),
-    Status(hyper::StatusCode),
-    Uri,
-    Body,
-    UploadFailed,
-}
-
-impl From<reqwest::Error> for HttpError {
-    fn from(err: reqwest::Error) -> Self {
-        HttpError::Transport(err)
-    }
-}
-
-impl From<hyper::Error> for HttpError {
-    fn from(err: hyper::Error) -> Self {
-        HttpError::Hyper(err)
-    }
-}
-
-impl From<http::uri::InvalidUri> for HttpError {
-    fn from(_: http::uri::InvalidUri) -> Self {
-        HttpError::Uri
-    }
-}
-
-impl From<http::Error> for HttpError {
-    fn from(err: http::Error) -> Self {
-        HttpError::Generic(err)
-    }
-}
-
-lazy_static! {
-    static ref TOKEN_PROVIDER: ServiceAccountAccess = {
-    // Read in the usual key file.
-    let env_key = "GOOGLE_APPLICATION_CREDENTIALS";
-    let cred_path = std::env::var(env_key).expect("You must set GOOGLE_APPLICATION_CREDENTIALS environment variable");
-    let key_data = std::fs::read_to_string(cred_path).expect("failed to read credential file");
-    let acct_info = ServiceAccountInfo::deserialize(key_data).expect("failed to decode credential file");
-
-    ServiceAccountAccess::new(acct_info).expect("failed to create OAuth Token Provider")
-    };
-}
-
 pub fn new_client() -> GcsHttpClient {
     // NOTE(boulos): Previously, I was passing some default headers
     // here. Now that bearer_auth is per request, this is less needed,
     // but we can change that later.
     let https = hyper_rustls::HttpsConnector::with_native_roots();
     hyper::Client::builder().build::<_, hyper::Body>(https)
-}
-
-// Given an http::Request, actually issue it via reqwest, returning
-// the http::Response.
-pub fn do_http_via_reqwest(
-    req: http::Request<Vec<u8>>,
-) -> Result<http::Response<Vec<u8>>, HttpError> {
-    let (parts, body) = req.into_parts();
-
-    assert_eq!(parts.method, http::Method::POST);
-
-    let client = reqwest::blocking::Client::new();
-    let uri = parts.uri.to_string();
-
-    // Go from http::Request => a POST via reqwest
-    let response = client
-        .post(&uri)
-        .headers(parts.headers)
-        .body(body)
-        .send()
-        .expect("Failed to send POST");
-
-    // Convert the response from reqwest => http::Response
-    let mut builder = http::Response::builder()
-        .status(response.status())
-        .version(response.version());
-
-    // There's no way to pass in a header map (only headers_mut and
-    // headers_ref), so we go through and map() across it.
-    let resp_headers = builder.headers_mut().unwrap();
-    resp_headers.extend(
-        response
-            .headers()
-            .into_iter()
-            .map(|(k, v)| (k.clone(), v.clone())),
-    );
-
-    // NOTE(boulos): This has to come after creating builder, because
-    // .bytes() consumes the response (so response.status() above is
-    // out of scope).
-    let bytes: Vec<u8> = response.bytes().map_err(HttpError::Transport)?.to_vec();
-
-    // Get the response out. (Confusingly ".body()" consumes the builder)
-    builder.body(bytes).map_err(HttpError::Generic)
-}
-
-// Get a bearer token from our ServiceAccount (potentially performing an Oauth dance via HTTP)
-pub fn get_token() -> Result<String, HttpError> {
-    // NOTE(boulos): The service account needs both storage viewer (to
-    // see objects) and *project* viewer to see the Bucket.
-    let scopes = vec!["https://www.googleapis.com/auth/devstorage.read_write"];
-
-    let token_or_req = TOKEN_PROVIDER.get_token(&scopes).unwrap();
-
-    match token_or_req {
-        TokenOrRequest::Request {
-            request,
-            scope_hash,
-            ..
-        } => {
-            let response = do_http_via_reqwest(request)?;
-            let token = TOKEN_PROVIDER
-                .parse_token_response(scope_hash, response)
-                .unwrap();
-            Ok(token.access_token)
-        }
-        TokenOrRequest::Token(token) => Ok(token.access_token),
-    }
 }
 
 async fn do_async_request(
