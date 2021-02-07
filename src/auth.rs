@@ -21,14 +21,25 @@ use tame_oauth::gcp::prelude::*;
 use crate::errors::HttpError;
 
 lazy_static! {
-    static ref TOKEN_PROVIDER: ServiceAccountAccess = {
+    static ref TOKEN_PROVIDER: Option<ServiceAccountAccess> = {
     // Read in the usual key file.
     let env_key = "GOOGLE_APPLICATION_CREDENTIALS";
-    let cred_path = std::env::var(env_key).expect("You must set GOOGLE_APPLICATION_CREDENTIALS environment variable");
+    let cred_env = std::env::var(env_key);
+    let cred_path = match cred_env {
+        Ok(path) => path,
+        Err(std::env::VarError::NotPresent) => {
+        info!("{} not set. Assuming public buckets", env_key);
+        return None
+        },
+        Err(error) => panic!("Invalid {}. Error {:?}", env_key, error)
+    };
+
+    debug!("Going to get GCP credentials from {}", cred_path);
+
     let key_data = std::fs::read_to_string(cred_path).expect("failed to read credential file");
     let acct_info = ServiceAccountInfo::deserialize(key_data).expect("failed to decode credential file");
 
-    ServiceAccountAccess::new(acct_info).expect("failed to create OAuth Token Provider")
+    Some(ServiceAccountAccess::new(acct_info).expect("failed to create OAuth Token Provider"))
     };
 }
 
@@ -77,25 +88,53 @@ pub fn do_http_via_reqwest(
 }
 
 // Get a bearer token from our ServiceAccount (potentially performing an Oauth dance via HTTP)
-pub fn get_token() -> Result<String, HttpError> {
+pub fn get_token() -> Result<Option<String>, HttpError> {
     // NOTE(boulos): The service account needs both storage viewer (to
     // see objects) and *project* viewer to see the Bucket.
     let scopes = vec!["https://www.googleapis.com/auth/devstorage.read_write"];
 
-    let token_or_req = TOKEN_PROVIDER.get_token(&scopes).unwrap();
+    if TOKEN_PROVIDER.is_none() {
+        // We're doing public auth => no token.
+        return Ok(None);
+    }
 
-    match token_or_req {
+    let provider = TOKEN_PROVIDER.as_ref().unwrap();
+
+    let token_or_req = provider.get_token(&scopes).unwrap();
+
+    let token = match token_or_req {
         TokenOrRequest::Request {
             request,
             scope_hash,
             ..
         } => {
             let response = do_http_via_reqwest(request)?;
-            let token = TOKEN_PROVIDER
-                .parse_token_response(scope_hash, response)
-                .unwrap();
-            Ok(token.access_token)
+            let token = provider.parse_token_response(scope_hash, response).unwrap();
+            token
         }
-        TokenOrRequest::Token(token) => Ok(token.access_token),
+        TokenOrRequest::Token(token) => token,
+    };
+
+    Ok(Some(token.access_token))
+}
+
+// Optionally add the auth header to a request builder.
+pub fn add_auth_header(builder: &mut http::request::Builder) -> Result<(), HttpError> {
+    let token = get_token()?;
+
+    if token.is_none() {
+        return Ok(());
+    }
+
+    let token = token.unwrap();
+    let headers = builder.headers_mut().unwrap();
+    let formatted = format!("Bearer {}", token);
+    let as_value = http::header::HeaderValue::from_str(&formatted);
+    match as_value {
+        Ok(value) => {
+            headers.append(http::header::AUTHORIZATION, value);
+            Ok(())
+        }
+        Err(err) => Err(HttpError::Generic(err.into())),
     }
 }

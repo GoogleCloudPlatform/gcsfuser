@@ -12,9 +12,24 @@ data, trash your buckets, and so on.
 
 ## Running the tests
 
-Running the tests *requires* a service account. My current command is:
+Read-only tests run successfully without a service account, but to
+write to a bucket requires a service account JSON file passed via the
+```GOOGLE_APPLICATION_CREDENTIALS``` environment variable. For
+example:
 
 ```
 GOOGLE_APPLICATION_CREDENTIALS=~/account.json RUST_BACKTRACE=full RUST_LOG=gcsfuser::fs=debug,fuser=debug cargo test -- --nocapture
 ```
 
+If you don't set GOOGLE_APPLICATION_CREDENTIALS or don't have access
+to the currently hardcoded test bucket, you should expect tests that
+interact with those private buckets to fail. The current (2021-Feb-06)
+set of failures from a straightforward ```cargo test```:
+
+```
+failures:
+    bucket::tests::get_private_bucket
+    bucket::tests::get_private_object
+    fs::tests::large_write
+    fs::tests::small_write
+```

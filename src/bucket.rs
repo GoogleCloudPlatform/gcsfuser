@@ -26,7 +26,7 @@ use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
 use std::convert::TryInto;
 
-use crate::auth::get_token;
+use crate::auth::{add_auth_header, get_token};
 use crate::errors::HttpError;
 use url::Url;
 
@@ -94,19 +94,16 @@ async fn do_async_request(
 async fn get_bucket(bucket_str: &str) -> Result<Bucket, HttpError> {
     debug!("Looking to request: {:#?}", bucket_str);
     let client = new_client();
-    let token = get_token()?;
 
     let base_url = "https://www.googleapis.com/storage/v1/b";
     let bucket_url = format!("{}/{}", base_url, bucket_str);
     let uri: hyper::Uri = bucket_url.parse()?;
 
-    let body = hyper::Body::default();
+    let mut builder = hyper::Request::builder().uri(uri);
+    add_auth_header(&mut builder)?;
 
-    let request = hyper::Request::builder()
-        .uri(uri)
-        .header(http::header::AUTHORIZATION, format!("Bearer {}", token))
-        .body(body)
-        .expect("Failed to construct request");
+    let body = hyper::Body::default();
+    let request = builder.body(body).expect("Failed to construct request");
 
     debug!("{:#?}", request);
 
@@ -121,17 +118,13 @@ async fn get_object(url: Url) -> Result<Object, HttpError> {
     debug!("Looking to request: {:#?}", url);
 
     let client = new_client();
-    let token = get_token()?;
     let uri: hyper::Uri = url.into_string().parse()?;
-
     let body = hyper::Body::default();
 
-    let request = hyper::Request::builder()
-        .uri(uri)
-        .header(http::header::AUTHORIZATION, format!("Bearer {}", token))
-        .body(body)
-        .expect("Failed to construct request");
+    let mut builder = hyper::Request::builder().uri(uri);
+    add_auth_header(&mut builder)?;
 
+    let request = builder.body(body).expect("Failed to construct request");
     let response = client.request(request).await.unwrap();
     debug!("{:#?}", response);
 
@@ -166,20 +159,19 @@ pub async fn get_bytes_with_client(
 
     let now = std::time::Instant::now();
 
-    let token = get_token()?;
-
     let uri: hyper::Uri = object_url.into_string().parse()?;
 
     let body = hyper::Body::default();
 
-    let request = http::Request::builder()
+    let mut builder = http::Request::builder()
         .uri(uri)
-        .header(http::header::AUTHORIZATION, format!("Bearer {}", token))
         // NOTE(boulos): RANGE *not* CONTENT-RANGE.
         // https://cloud.google.com/storage/docs/xml-api/reference-headers#range
-        .header(http::header::RANGE, byte_range)
-        .body(body)
-        .expect("Failed to construct request");
+        .header(http::header::RANGE, byte_range);
+
+    add_auth_header(&mut builder)?;
+
+    let request = builder.body(body).expect("Failed to construct request");
     debug!("Performing range request {:#?}", request);
 
     let response = client.request(request).await.unwrap();
@@ -213,8 +205,6 @@ pub async fn create_object_with_client(
         name, bucket
     );
 
-    let token = get_token()?;
-
     let base_url = "https://storage.googleapis.com/upload/storage/v1/b";
     let full_url = format!(
         "{base_url}/{bucket}/o?uploadType=resumable",
@@ -228,11 +218,14 @@ pub async fn create_object_with_client(
     "name": name,
     });
 
-    let request = hyper::Request::builder()
+    let mut builder = hyper::Request::builder()
         .method(hyper::Method::POST)
         .uri(upload_url)
-        .header(http::header::AUTHORIZATION, format!("Bearer {}", token))
-        .header(http::header::CONTENT_TYPE, "application/json")
+        .header(http::header::CONTENT_TYPE, "application/json");
+
+    add_auth_header(&mut builder)?;
+
+    let request = builder
         .body(hyper::Body::from(object_json.to_string()))
         .expect("Failed to construct upload request");
 
@@ -293,7 +286,6 @@ async fn _do_resumable_upload(
         verb, byte_range
     );
 
-    let token = get_token()?;
     let upload_url: hyper::Uri = session_uri.parse()?;
     // Hopefully this works with empty bodies.
     let body = hyper::body::Bytes::copy_from_slice(data);
@@ -304,9 +296,7 @@ async fn _do_resumable_upload(
     let request = hyper::Request::builder()
         .method(hyper::Method::POST)
         .uri(upload_url)
-        //.header(http::header::AUTHORIZATION, format!("Bearer {}", token))
         .header(http::header::CONTENT_RANGE, byte_range)
-        //.header(http::header::TRANSFER_ENCODING, "chunked")
         .header(
             http::header::CONTENT_TYPE,
             "application/x-www-form-urlencoded",
@@ -483,13 +473,14 @@ fn _do_one_list_object(
 
     let op = || -> Result<reqwest::blocking::Response, HttpError> {
         let client = reqwest::blocking::Client::new();
-        let token = get_token()?;
+        let auth_token = get_token()?;
 
-        let response = client
-            .get(list_url)
-            .bearer_auth(token)
-            .send()
-            .expect("Failed to send request");
+        let mut builder = client.get(list_url);
+        if auth_token.is_some() {
+            builder = builder.bearer_auth(auth_token.unwrap());
+        }
+
+        let response = builder.send().expect("Failed to send request");
 
         if response.status().is_client_error() {
             debug!("Got back {:#?}", response.status());
