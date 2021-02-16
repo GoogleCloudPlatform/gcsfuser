@@ -53,6 +53,14 @@ pub struct Object {
     pub size: u64,
     pub time_created: DateTime<Utc>,
     pub updated: DateTime<Utc>,
+    // The docs at
+    // https://cloud.google.com/storage/docs/json_api/v1/objects#resource
+    // refer to generation and metageneration as "long" represented as
+    // a strings.
+    #[serde(with = "serde_with::rust::display_fromstr")]
+    pub generation: i64,
+    #[serde(with = "serde_with::rust::display_fromstr")]
+    pub metageneration: i64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -153,9 +161,21 @@ pub async fn get_bytes_with_client(
 
     // Use the self_link from the object as the url, but add ?alt=media
     let mut object_url = Url::parse(&obj.self_link).unwrap();
-    object_url.query_pairs_mut().append_pair("alt", "media");
-
     let byte_range = format!("bytes={}-{}", offset, offset + how_many - 1);
+    // Make sure we're getting the data from the version we intend.
+    // TODO(boulos): Allow people to read stale data (generation=) if
+    // they prefer, rather than require that the latest version is up
+    // to date.
+    let generation_str = format!("{}", obj.generation);
+    let metageneration_str = format!("{}", obj.metageneration);
+
+    object_url.query_pairs_mut().append_pair("alt", "media");
+    object_url
+        .query_pairs_mut()
+        .append_pair("ifGenerationMatch", &generation_str);
+    object_url
+        .query_pairs_mut()
+        .append_pair("ifMetagenerationMatch", &metageneration_str);
 
     let now = std::time::Instant::now();
 
@@ -175,6 +195,11 @@ pub async fn get_bytes_with_client(
     debug!("Performing range request {:#?}", request);
 
     let response = client.request(request).await.unwrap();
+
+    if !response.status().is_success() {
+        debug!("Request failed. status => {}", response.status());
+        return Err(HttpError::Status(response.status()));
+    }
 
     let written = hyper::body::to_bytes(response).await.unwrap();
     debug!(
@@ -603,6 +628,129 @@ mod tests {
 
         let offset_bytes: Vec<u8> = get_bytes(&object, 4099, 1024).await.unwrap();
         println!("Got back:\n {}", String::from_utf8(offset_bytes).unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_object_invalid() {
+        init();
+
+        let object_url = Url::parse(
+            "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2FPRE%2F044%2F034%2FLC80440342017101LGN00%2FLC80440342017101LGN00_MTL.txt"
+        ).unwrap();
+        let object: Object = get_object(object_url).await.unwrap();
+        println!("Object has {} bytes", object.size);
+
+        println!("Object debug is {:#?}", object);
+
+        let bytes: Vec<u8> = get_bytes(&object, 0, 4096).await.unwrap();
+        println!("Got back:\n {}", String::from_utf8(bytes).unwrap());
+
+        // Now, make a copy of that object and change the self link.
+        let mut modified: Object = object;
+        // Take the last character off.
+        modified.self_link.pop();
+
+        let expect_404 = get_bytes(&modified, 0, 4096).await;
+        assert_eq!(expect_404.is_err(), true);
+        // I cannot figure out how to make this work. But I wish I could.
+        //assert_eq!(expect_404.unwrap_err(),
+        //	   HttpError::Status(http::StatusCode::NOT_FOUND));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_private_object() {
+        init();
+
+        let client = new_client();
+
+        let bucket_str = "boulos-rustgcs";
+
+        let filename = "write_private_obj.txt";
+
+        // Get us a handle to a resumable upload.
+        let mut cursor = create_object_with_client(&client, bucket_str, filename)
+            .await
+            .unwrap();
+
+        let bytes = "Hello, GCS!";
+
+        // Do the write in a single shot.
+        let result = _do_resumable_upload(&client, &cursor.session_uri, 0, bytes.as_bytes(), true)
+            .await
+            .unwrap();
+
+        match result {
+            Some(obj) => println!(
+                "Obj has size {} and generation {}",
+                obj.size, obj.generation
+            ),
+            None => panic!("Didn't get back an Object!"),
+        };
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_object_race() {
+        init();
+
+        let client = new_client();
+
+        let bucket_str = "boulos-rustgcs";
+
+        let filename = "write_object_race.txt";
+
+        let original = "Original value";
+        let new_value = "New values";
+
+        let original_obj = {
+            // Write out the original value to our file.
+            let mut cursor = create_object_with_client(&client, bucket_str, filename)
+                .await
+                .unwrap();
+            let result =
+                _do_resumable_upload(&client, &cursor.session_uri, 0, original.as_bytes(), true)
+                    .await
+                    .unwrap();
+
+            match result {
+                Some(obj) => obj,
+                None => panic!("Expected to get back an object..."),
+            }
+        };
+
+        println!("Wrote {} with object {:#?}", filename, original_obj);
+
+        let new_obj = {
+            // Now, write over the object again with the new data.
+            let mut cursor = create_object_with_client(&client, bucket_str, filename)
+                .await
+                .unwrap();
+            let result =
+                _do_resumable_upload(&client, &cursor.session_uri, 0, new_value.as_bytes(), true)
+                    .await
+                    .unwrap();
+            match result {
+                Some(obj) => obj,
+                None => panic!("Expected to get back an object..."),
+            }
+        };
+
+        println!("Overwrote {} with object {:#?}", filename, new_obj);
+
+        // Now, if we try to read the original one, it's gone.
+        let read_orig = get_bytes_with_client(&client, &original_obj, 0, original_obj.size).await;
+
+        // We should have gotten some sort of error.
+        assert_eq!(read_orig.is_err(), true);
+
+        let read_new = get_bytes_with_client(&client, &new_obj, 0, new_obj.size).await;
+
+        // We shouldn't have gotten an error.
+        assert_eq!(read_new.is_err(), false);
+
+        let read_result = read_new.unwrap();
+
+        // Make sure we got the correct bytes out.
+        assert_eq!(read_result, new_value.as_bytes());
     }
 
     #[test]

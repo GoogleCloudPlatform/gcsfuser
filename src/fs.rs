@@ -1123,6 +1123,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    // This test copies the entire 70MB file, so don't usually run it.
     fn mount_and_cp<'a>() {
         init();
 
@@ -1161,6 +1163,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    // This test also copies the whole 70MB file, but via dd.
     fn test_dd<'a>() {
         init();
         let dir = TempDir::new("test_dd").unwrap();
