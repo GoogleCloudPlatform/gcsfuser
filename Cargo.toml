@@ -24,7 +24,6 @@ log = "0.4"
 oauth2 = "2.0"
 openssl = "0.10"
 rayon = "1.5"
-reqwest = { version = "0.10.8", features = ["blocking", "json"] }
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"

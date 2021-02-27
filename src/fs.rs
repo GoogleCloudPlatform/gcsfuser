@@ -24,7 +24,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::Object;
-use crate::bucket::list_objects;
 
 pub type Inode = u64;
 

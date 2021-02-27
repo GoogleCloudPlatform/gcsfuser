@@ -15,7 +15,6 @@
 extern crate http;
 extern crate hyper;
 extern crate hyper_rustls;
-extern crate reqwest;
 extern crate serde;
 extern crate serde_json;
 extern crate serde_with;
@@ -26,7 +25,7 @@ use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
 use std::convert::TryInto;
 
-use crate::auth::{add_auth_header, get_token};
+use crate::auth::add_auth_header;
 use crate::errors::HttpError;
 use url::Url;
 
@@ -108,7 +107,7 @@ async fn get_bucket(bucket_str: &str) -> Result<Bucket, HttpError> {
     let uri: hyper::Uri = bucket_url.parse()?;
 
     let mut builder = hyper::Request::builder().uri(uri);
-    add_auth_header(&mut builder)?;
+    add_auth_header(&mut builder).await?;
 
     let body = hyper::Body::default();
     let request = builder.body(body).expect("Failed to construct request");
@@ -130,7 +129,7 @@ async fn get_object(url: Url) -> Result<Object, HttpError> {
     let body = hyper::Body::default();
 
     let mut builder = hyper::Request::builder().uri(uri);
-    add_auth_header(&mut builder)?;
+    add_auth_header(&mut builder).await?;
 
     let request = builder.body(body).expect("Failed to construct request");
     let response = client.request(request).await.unwrap();
@@ -189,7 +188,7 @@ pub async fn get_bytes_with_client(
         // https://cloud.google.com/storage/docs/xml-api/reference-headers#range
         .header(http::header::RANGE, byte_range);
 
-    add_auth_header(&mut builder)?;
+    add_auth_header(&mut builder).await?;
 
     let request = builder.body(body).expect("Failed to construct request");
     debug!("Performing range request {:#?}", request);
@@ -248,7 +247,7 @@ pub async fn create_object_with_client(
         .uri(upload_url)
         .header(http::header::CONTENT_TYPE, "application/json");
 
-    add_auth_header(&mut builder)?;
+    add_auth_header(&mut builder).await?;
 
     let request = builder
         .body(hyper::Body::from(object_json.to_string()))
@@ -500,7 +499,7 @@ async fn _do_one_list_object(
     let uri: hyper::Uri = list_url.into_string().parse()?;
 
     let mut builder = http::Request::builder().uri(uri);
-    add_auth_header(&mut builder)?;
+    add_auth_header(&mut builder).await?;
 
     let body = hyper::Body::default();
     let request = builder

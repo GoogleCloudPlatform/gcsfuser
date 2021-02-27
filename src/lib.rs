@@ -25,8 +25,6 @@ extern crate env_logger;
 
 extern crate url;
 
-extern crate reqwest;
-
 extern crate libc;
 extern crate rayon;
 extern crate time;

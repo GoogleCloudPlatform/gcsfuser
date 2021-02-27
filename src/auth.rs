@@ -13,7 +13,8 @@
 // limitations under the License.
 
 extern crate http;
-extern crate reqwest;
+extern crate hyper;
+extern crate hyper_rustls;
 
 use lazy_static::lazy_static;
 use tame_oauth::gcp::prelude::*;
@@ -43,52 +44,32 @@ lazy_static! {
     };
 }
 
-// Given an http::Request, actually issue it via reqwest, returning
+// Given an http::Request, actually issue it (via hyper), returning
 // the http::Response.
-pub fn do_http_via_reqwest(
-    req: http::Request<Vec<u8>>,
+async fn do_http_request(
+    request: http::Request<Vec<u8>>,
 ) -> Result<http::Response<Vec<u8>>, HttpError> {
-    let (parts, body) = req.into_parts();
+    // We only expect a POST.
+    assert_eq!(request.method(), http::Method::POST);
 
-    assert_eq!(parts.method, http::Method::POST);
+    let https = hyper_rustls::HttpsConnector::with_native_roots();
+    let client = hyper::Client::builder().build::<_, hyper::Body>(https);
 
-    let client = reqwest::blocking::Client::new();
-    let uri = parts.uri.to_string();
+    // Sigh, convert from request of Vec<u8> to request of hyper::Body
+    let (req_part, req_body) = request.into_parts();
+    let hyper_body: hyper::Body = req_body.into();
+    let hyper_req = http::Request::from_parts(req_part, hyper_body);
+    let response = client.request(hyper_req).await?;
 
-    // Go from http::Request => a POST via reqwest
-    let response = client
-        .post(&uri)
-        .headers(parts.headers)
-        .body(body)
-        .send()
-        .expect("Failed to send POST");
+    // And then back from Response<hyper::Body> => Response<Vec<u8>>
+    let (resp_parts, resp_body) = response.into_parts();
+    let vec_body: Vec<u8> = hyper::body::to_bytes(resp_body).await?.to_vec();
 
-    // Convert the response from reqwest => http::Response
-    let mut builder = http::Response::builder()
-        .status(response.status())
-        .version(response.version());
-
-    // There's no way to pass in a header map (only headers_mut and
-    // headers_ref), so we go through and map() across it.
-    let resp_headers = builder.headers_mut().unwrap();
-    resp_headers.extend(
-        response
-            .headers()
-            .into_iter()
-            .map(|(k, v)| (k.clone(), v.clone())),
-    );
-
-    // NOTE(boulos): This has to come after creating builder, because
-    // .bytes() consumes the response (so response.status() above is
-    // out of scope).
-    let bytes: Vec<u8> = response.bytes().map_err(HttpError::Transport)?.to_vec();
-
-    // Get the response out. (Confusingly ".body()" consumes the builder)
-    builder.body(bytes).map_err(HttpError::Generic)
+    Ok(http::Response::from_parts(resp_parts, vec_body))
 }
 
 // Get a bearer token from our ServiceAccount (potentially performing an Oauth dance via HTTP)
-pub fn get_token() -> Result<Option<String>, HttpError> {
+async fn get_token() -> Result<Option<String>, HttpError> {
     // NOTE(boulos): The service account needs both storage viewer (to
     // see objects) and *project* viewer to see the Bucket.
     let scopes = vec!["https://www.googleapis.com/auth/devstorage.read_write"];
@@ -108,7 +89,7 @@ pub fn get_token() -> Result<Option<String>, HttpError> {
             scope_hash,
             ..
         } => {
-            let response = do_http_via_reqwest(request)?;
+            let response = do_http_request(request).await?;
             let token = provider.parse_token_response(scope_hash, response).unwrap();
             token
         }
@@ -119,8 +100,8 @@ pub fn get_token() -> Result<Option<String>, HttpError> {
 }
 
 // Optionally add the auth header to a request builder.
-pub fn add_auth_header(builder: &mut http::request::Builder) -> Result<(), HttpError> {
-    let token = get_token()?;
+pub async fn add_auth_header(builder: &mut http::request::Builder) -> Result<(), HttpError> {
+    let token = get_token().await?;
 
     if token.is_none() {
         return Ok(());

@@ -14,25 +14,16 @@
 
 extern crate http;
 extern crate hyper;
-extern crate reqwest;
 
-// Add a simple union type of "Either reqwest::Error" (our Transport)
-// or generic Http errors.
+// Add a simple union type of our various sources of HTTP-ish errors.
 #[derive(Debug)]
 pub enum HttpError {
-    Transport(reqwest::Error),
     Hyper(hyper::Error),
     Generic(http::Error),
     Status(hyper::StatusCode),
     Uri,
     Body,
     UploadFailed,
-}
-
-impl From<reqwest::Error> for HttpError {
-    fn from(err: reqwest::Error) -> Self {
-        HttpError::Transport(err)
-    }
 }
 
 impl From<hyper::Error> for HttpError {

@@ -23,13 +23,15 @@ GOOGLE_APPLICATION_CREDENTIALS=~/account.json RUST_BACKTRACE=full RUST_LOG=gcsfu
 
 If you don't set GOOGLE_APPLICATION_CREDENTIALS or don't have access
 to the currently hardcoded test bucket, you should expect tests that
-interact with those private buckets to fail. The current (2021-Feb-06)
+interact with those private buckets to fail. The current (2021-Feb-27)
 set of failures from a straightforward ```cargo test```:
 
 ```
 failures:
     bucket::tests::get_private_bucket
     bucket::tests::get_private_object
+    bucket::tests::write_object_race
+    bucket::tests::write_private_object
     fs::tests::large_write
     fs::tests::small_write
 ```
