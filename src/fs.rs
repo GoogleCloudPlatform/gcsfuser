@@ -907,8 +907,8 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
         let txt_file = "LC80440342017101LGN00/LC80440342017101LGN00_MTL.txt";
@@ -932,8 +932,8 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
         let tif_file = "LC80440342017101LGN00_B7.TIF";
@@ -968,8 +968,8 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
         let tif_file = "LC80440342017101LGN00_B7.TIF";
@@ -1005,8 +1005,8 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
         let mut tmp_file = NamedTempFile::new_in(mnt_str).unwrap();
@@ -1022,8 +1022,8 @@ mod tests {
         assert!(sync_result.is_ok());
         // drop the file to close it.
         drop(txt_file);
-        info!("Sleeping for 250ms, to wait for the FS to be flush, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        info!("Sleeping for 1s, to wait for the FS to be flush, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
 
         // Drop the daemon to clean up.
         drop(daemon);
@@ -1042,8 +1042,8 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
         let mut tmp_file = NamedTempFile::new_in(mnt_str).unwrap();
@@ -1095,8 +1095,8 @@ mod tests {
         assert!(sync_result.is_ok());
         // drop the file to close and unlink it.
         drop(file);
-        info!("Sleeping for 250ms, to wait for the FS to be flush, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        info!("Sleeping for 1s, to wait for the FS to be flush, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
 
         // Drop the daemon to clean up.
         drop(daemon);
@@ -1117,8 +1117,11 @@ mod tests {
             mount_tempdir_ro(mnt);
         });
         info!("mounted fs at {} on thread {:#?}", mnt_str, fs);
-        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        // There isn't any way in this rust fuse handler to wait for
+        // the filesystem to be ready. Session.initialized isn't
+        // accessible from BackgroundSession.
+        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
         run_ls(&mnt_str);
 
@@ -1143,8 +1146,8 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
         let tif_file = "LC80440342017101LGN00_B7.TIF";
@@ -1182,8 +1185,8 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 250ms, to wait for the FS to be ready, because shitty");
-        std::thread::sleep(Duration::from_millis(250));
+        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
         let tif_file = "LC80440342017101LGN00_B7.TIF";
