@@ -164,12 +164,18 @@ impl GCSFS {
         //debug!("   GCSFS. DIR {}", prefix_for_load);
 
         // Always use / as delim.
-        let (single_level_objs, subdirs) = list_objects(
-            bucket_clone.as_ref(),
-            prefix_clone.as_ref().map(String::as_str),
-            Some("/"),
-        )
-        .unwrap();
+        let (single_level_objs, subdirs) = self
+            .tokio_rt
+            .block_on(async {
+                super::bucket::list_objects(
+                    &self.gcs_client,
+                    bucket_clone.as_ref(),
+                    prefix_clone.as_ref().map(String::as_str),
+                    Some("/"),
+                )
+                .await
+            })
+            .unwrap();
 
         let dir_inode = self.get_inode();
         let dir_time: SystemTime = UNIX_EPOCH + Duration::new(1534812086, 0); // 2018-08-20 15:41 Pacific

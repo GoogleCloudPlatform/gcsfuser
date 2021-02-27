@@ -91,7 +91,7 @@ pub fn new_client() -> GcsHttpClient {
 }
 
 async fn do_async_request(
-    client: GcsHttpClient,
+    client: &GcsHttpClient,
     request: hyper::Request<hyper::Body>,
 ) -> Result<hyper::body::Bytes, HttpError> {
     let response = client.request(request).await.unwrap();
@@ -115,7 +115,7 @@ async fn get_bucket(bucket_str: &str) -> Result<Bucket, HttpError> {
 
     debug!("{:#?}", request);
 
-    let bytes = do_async_request(client, request).await.unwrap();
+    let bytes = do_async_request(&client, request).await.unwrap();
 
     let bucket: Bucket = serde_json::from_slice(&bytes).unwrap();
     debug!("{:#?}", bucket);
@@ -469,7 +469,8 @@ pub async fn finalize_upload_with_client(
     Ok(obj)
 }
 
-fn _do_one_list_object(
+async fn _do_one_list_object(
+    client: &GcsHttpClient,
     bucket: &str,
     prefix: Option<&str>,
     delim: Option<&str>,
@@ -496,36 +497,27 @@ fn _do_one_list_object(
             .append_pair("pageToken", token_str);
     }
 
-    let op = || -> Result<reqwest::blocking::Response, HttpError> {
-        let client = reqwest::blocking::Client::new();
-        let auth_token = get_token()?;
+    let uri: hyper::Uri = list_url.into_string().parse()?;
 
-        let mut builder = client.get(list_url);
-        if auth_token.is_some() {
-            builder = builder.bearer_auth(auth_token.unwrap());
-        }
+    let mut builder = http::Request::builder().uri(uri);
+    add_auth_header(&mut builder)?;
 
-        let response = builder.send().expect("Failed to send request");
+    let body = hyper::Body::default();
+    let request = builder
+        .body(body)
+        .expect("Failed to construct list request");
 
-        if response.status().is_client_error() {
-            debug!("Got back {:#?}", response.status());
-        }
+    debug!("{:#?}", request);
+    let bytes = do_async_request(client, request).await.unwrap();
 
-        debug!("  List obj response is {:#?}", response);
+    let list_response: ListObjectsResponse = serde_json::from_slice(&bytes).unwrap();
+    debug!("{:#?}", list_response);
 
-        Ok(response)
-    };
-
-    // TODO(boulos): Do jittered exponential backoff
-    let response = op()?;
-
-    //debug!(" ListObject body => {:#?}", response.text()?);
-
-    let list_response = response.json::<ListObjectsResponse>();
-    return list_response.map_err(HttpError::Transport);
+    Ok(list_response)
 }
 
-pub fn list_objects(
+pub async fn list_objects(
+    client: &GcsHttpClient,
     bucket: &str,
     prefix: Option<&str>,
     delim: Option<&str>,
@@ -542,8 +534,8 @@ pub fn list_objects(
 
     loop {
         let resp = match page_token.is_empty() {
-            true => _do_one_list_object(bucket, prefix, delim, None)?,
-            false => _do_one_list_object(bucket, prefix, delim, Some(&page_token))?,
+            true => _do_one_list_object(client, bucket, prefix, delim, None).await?,
+            false => _do_one_list_object(client, bucket, prefix, delim, Some(&page_token)).await?,
         };
 
         if resp.items.is_some() {
@@ -753,37 +745,47 @@ mod tests {
         assert_eq!(read_result, new_value.as_bytes());
     }
 
-    #[test]
-    fn test_list_objects() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_objects() {
         init();
+
+        let client = new_client();
 
         let bucket = "boulos-hadoop";
         let prefix = "bdutil-staging";
         let delim = "/";
 
-        let (objects, _) = list_objects(bucket, Some(prefix), Some(delim)).unwrap();
+        let (objects, _) = list_objects(&client, bucket, Some(prefix), Some(delim))
+            .await
+            .unwrap();
         println!("Got {} objects", objects.len());
         println!("Dump:\n\n{:#?}", objects);
 
-        let (all_objects, _) = list_objects(bucket, None, None).unwrap();
+        let (all_objects, _) = list_objects(&client, bucket, None, None).await.unwrap();
         println!("Got {} objects", all_objects.len());
         println!("Dump:\n\n{:#?}", all_objects);
 
-        let (only_top_level, prefixes) = list_objects(bucket, None, Some(delim)).unwrap();
+        let (only_top_level, prefixes) = list_objects(&client, bucket, None, Some(delim))
+            .await
+            .unwrap();
         println!("Got {} objects", only_top_level.len());
         println!("Dump:\n\n{:#?}", only_top_level);
         println!("Prefixes:\n\n{:#?}", prefixes);
     }
 
-    #[test]
-    fn test_list_paginated() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_paginated() {
         init();
+
+        let client = new_client();
 
         let bucket = "gcp-public-data-landsat";
         let prefix = "LC08/PRE/044/034/";
         let delim = "/";
 
-        let (objects, prefixes) = list_objects(bucket, Some(prefix), Some(delim)).unwrap();
+        let (objects, prefixes) = list_objects(&client, bucket, Some(prefix), Some(delim))
+            .await
+            .unwrap();
         println!("Got {} objects", objects.len());
         println!("prefixes: {:#?}", prefixes);
         println!("objects: {:#?}", objects)
