@@ -16,7 +16,7 @@ use fuser::{
     FileAttr, FileType, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData,
     ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyWrite, Request,
 };
-use libc::{EIO, ENOENT, ENOTDIR, O_DIRECT};
+use libc::{EIO, ENOENT, ENOTDIR};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -448,7 +448,7 @@ impl Filesystem for GCSFS {
             parent, name, mode, flags
         );
 
-        let file_type = mode & libc::S_IFMT as u32;
+        let file_type = (mode as libc::mode_t) & libc::S_IFMT;
 
         if file_type != libc::S_IFREG && file_type != libc::S_IFDIR {
             warn!(
@@ -954,6 +954,8 @@ mod tests {
         drop(daemon);
     }
 
+    // macOS doesn't have O_DIRECT
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn direct_read<'a>() {
         init();
