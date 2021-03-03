@@ -58,14 +58,14 @@ pub struct GCSFS {
     // So we can refer into the file handle map.
     fh_counter: AtomicU64,
 
-    file_handles: RwLock<HashMap<u64, super::bucket::ResumableUploadCursor>>,
+    file_handles: RwLock<HashMap<u64, super::gcs::ResumableUploadCursor>>,
 
     // GCS configuration
     gcs_bucket: String,
     gcs_prefix: Option<String>,
 
     // Persistent client
-    gcs_client: super::bucket::GcsHttpClient,
+    gcs_client: super::gcs::GcsHttpClient,
 
     // And our runtime for waiting out async.
     tokio_rt: tokio::runtime::Runtime,
@@ -84,7 +84,7 @@ impl GCSFS {
             file_handles: RwLock::new(HashMap::new()),
             gcs_bucket: bucket,
             gcs_prefix: prefix,
-            gcs_client: super::bucket::new_client(),
+            gcs_client: super::gcs::new_client(),
             tokio_rt: tokio::runtime::Runtime::new().unwrap(),
         }
     }
@@ -96,7 +96,7 @@ impl GCSFS {
         return *data;
     }
 
-    fn make_fh(&self, cursor: super::bucket::ResumableUploadCursor) -> u64 {
+    fn make_fh(&self, cursor: super::gcs::ResumableUploadCursor) -> u64 {
         let fh = self.fh_counter.fetch_add(1, Ordering::SeqCst);
         // Put the cursor into our hash map.
         self.file_handles.write().unwrap().insert(fh, cursor);
@@ -166,7 +166,7 @@ impl GCSFS {
         let (single_level_objs, subdirs) = self
             .tokio_rt
             .block_on(async {
-                super::bucket::list_objects(
+                super::gcs::list_objects(
                     &self.gcs_client,
                     bucket_clone.as_ref(),
                     prefix_clone.as_ref().map(String::as_str),
@@ -359,7 +359,7 @@ impl Filesystem for GCSFS {
         if let Some(obj) = self.inode_to_obj.read().unwrap().get(&inode) {
             debug!("  Performing read for obj: {:#?}", obj);
             let result = self.tokio_rt.block_on(async {
-                super::bucket::get_bytes_with_client(
+                super::gcs::get_bytes_with_client(
                     &self.gcs_client,
                     obj,
                     offset as u64,
@@ -507,7 +507,7 @@ impl Filesystem for GCSFS {
         let fh = match kind {
             FileType::RegularFile => {
                 let create_result = self.tokio_rt.block_on(async {
-                    super::bucket::create_object_with_client(
+                    super::gcs::create_object_with_client(
                         &self.gcs_client,
                         &self.gcs_bucket,
                         &full_name,
@@ -635,7 +635,7 @@ impl Filesystem for GCSFS {
         }
 
         let result = self.tokio_rt.block_on(async {
-            super::bucket::append_bytes_with_client(&self.gcs_client, cursor, data).await
+            super::gcs::append_bytes_with_client(&self.gcs_client, cursor, data).await
         });
 
         if result.is_err() {
@@ -694,7 +694,7 @@ impl Filesystem for GCSFS {
 
         let mut cursor = cursor_or_none.unwrap();
         let result = self.tokio_rt.block_on(async {
-            super::bucket::finalize_upload_with_client(&self.gcs_client, cursor).await
+            super::gcs::finalize_upload_with_client(&self.gcs_client, cursor).await
         });
 
         if result.is_err() {
