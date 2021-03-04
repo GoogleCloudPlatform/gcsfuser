@@ -1,8 +1,9 @@
 # gcsfuser: A gcsfuse rewrite in Rust
 
 [gcsfuse]: https://github.com/GoogleCloudPlatform/gcsfuse
+[fuser]: https://github.com/cberner/fuser
 
-**gcsfuser** is a WIP Rust rewrite of [gcsfuse].
+**gcsfuser** is a WIP Rust rewrite of [gcsfuse] on top of [fuser].
 
 ## Current status
 

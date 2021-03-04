@@ -821,12 +821,12 @@ mod tests {
         assert!(output.status.success());
     }
 
-    pub unsafe fn mount_bucket<'a>(
+    pub fn mount_bucket<'a>(
         bucket: String,
         prefix: Option<String>,
         mountpoint: String,
         read_only: bool,
-    ) {
+    ) -> fuser::BackgroundSession {
         let fs = GCSFS::new(bucket, prefix);
 
         let options = [
@@ -849,11 +849,10 @@ mod tests {
             mountpoint, options
         );
 
-        fuser::mount(fs, &mountpoint, &options).unwrap();
-        panic!("We should never get here, right...?");
+        fuser::spawn_mount(fs, &mountpoint, &options).unwrap()
     }
 
-    pub unsafe fn mount_tempdir_ro<'a>(mountpoint: PathBuf) {
+    pub fn mount_tempdir_ro<'a>(mountpoint: PathBuf) -> fuser::BackgroundSession {
         let bucket = "gcp-public-data-landsat";
         // Simple single dir.
         //let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
@@ -865,10 +864,10 @@ mod tests {
             Some(prefix.to_string()),
             mountpoint.to_str().unwrap().to_string(),
             true,
-        );
+        )
     }
 
-    pub unsafe fn mount_tempdir_rw<'a>(mountpoint: PathBuf) {
+    pub fn mount_tempdir_rw<'a>(mountpoint: PathBuf) -> fuser::BackgroundSession {
         let bucket = std::env::var("GCSFUSER_TEST_BUCKET").expect("You must provide a read/write bucket");
 
         mount_bucket(
@@ -876,7 +875,7 @@ mod tests {
             None,
             mountpoint.to_str().unwrap().to_string(),
             false,
-        );
+        )
     }
 
     #[test]
@@ -886,9 +885,7 @@ mod tests {
         let dir = TempDir::new("just_mount").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| unsafe {
-            mount_tempdir_ro(mnt);
-        });
+        let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
     }
@@ -900,9 +897,7 @@ mod tests {
         let dir = TempDir::new("mount_and_read").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| unsafe {
-            mount_tempdir_ro(mnt);
-        });
+        let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
@@ -925,9 +920,7 @@ mod tests {
         let dir = TempDir::new("large_read").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| unsafe {
-            mount_tempdir_ro(mnt);
-        });
+        let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
@@ -963,9 +956,7 @@ mod tests {
         let dir = TempDir::new("direct_read").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| unsafe {
-            mount_tempdir_ro(mnt);
-        });
+        let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
@@ -1000,9 +991,7 @@ mod tests {
         let dir = TempDir::new("mount_and_write").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| unsafe {
-            mount_tempdir_rw(mnt);
-        });
+        let daemon = mount_tempdir_rw(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
@@ -1037,9 +1026,7 @@ mod tests {
         let dir = TempDir::new("large_write").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| unsafe {
-            mount_tempdir_rw(mnt);
-        });
+        let daemon = mount_tempdir_rw(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
@@ -1114,9 +1101,7 @@ mod tests {
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
 
-        let fs = thread::spawn(|| unsafe {
-            mount_tempdir_ro(mnt);
-        });
+        let fs = mount_tempdir_ro(mnt);
         info!("mounted fs at {} on thread {:#?}", mnt_str, fs);
         // There isn't any way in this rust fuse handler to wait for
         // the filesystem to be ready. Session.initialized isn't
@@ -1141,9 +1126,7 @@ mod tests {
         let dir = TempDir::new("mount_and_cp").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| unsafe {
-            mount_tempdir_ro(mnt);
-        });
+        let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
@@ -1180,9 +1163,7 @@ mod tests {
         let dir = TempDir::new("test_dd").unwrap();
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
-        let daemon = thread::spawn(|| unsafe {
-            mount_tempdir_ro(mnt);
-        });
+        let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
