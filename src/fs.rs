@@ -73,7 +73,7 @@ pub struct GCSFS {
 
 impl GCSFS {
     pub fn new(bucket: String, prefix: Option<String>) -> Self {
-        info!("Making a GCSFS!");
+        info!("Making a GCSFS for Bucket {} w/ Prefix {:#?}!", bucket, prefix);
         GCSFS {
             inode_to_attr: RwLock::new(HashMap::new()),
             inode_to_obj: RwLock::new(HashMap::new()),
@@ -822,12 +822,12 @@ mod tests {
     }
 
     pub unsafe fn mount_bucket<'a>(
-        object_url: String,
+        bucket: String,
         prefix: Option<String>,
         mountpoint: String,
         read_only: bool,
     ) {
-        let fs = GCSFS::new(object_url, prefix);
+        let fs = GCSFS::new(bucket, prefix);
 
         let options = [
             "-o",
@@ -837,7 +837,7 @@ mod tests {
             "-o",
             "noatime",
             "-o",
-            "fsname=gcsfs",
+            "fsname=gcsfuser",
             /* "-o", "noappledouble" /* Disable ._. and .DS_Store files */ */
         ]
         .iter()
@@ -869,10 +869,10 @@ mod tests {
     }
 
     pub unsafe fn mount_tempdir_rw<'a>(mountpoint: PathBuf) {
-        let bucket = "boulos-rustgcs";
+        let bucket = std::env::var("GCSFUSER_TEST_BUCKET").expect("You must provide a read/write bucket");
 
         mount_bucket(
-            bucket.to_string(),
+            bucket,
             None,
             mountpoint.to_str().unwrap().to_string(),
             false,
@@ -906,7 +906,7 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be ready.");
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
@@ -931,7 +931,7 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be ready.");
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
@@ -969,7 +969,7 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be ready.");
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
@@ -1006,7 +1006,7 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be ready.");
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
@@ -1023,7 +1023,7 @@ mod tests {
         assert!(sync_result.is_ok());
         // drop the file to close it.
         drop(txt_file);
-        info!("Sleeping for 1s, to wait for the FS to be flush, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be flush.");
         std::thread::sleep(Duration::from_millis(1000));
 
         // Drop the daemon to clean up.
@@ -1043,7 +1043,7 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be ready.");
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
@@ -1096,7 +1096,7 @@ mod tests {
         assert!(sync_result.is_ok());
         // drop the file to close and unlink it.
         drop(file);
-        info!("Sleeping for 1s, to wait for the FS to be flush, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be flush.");
         std::thread::sleep(Duration::from_millis(1000));
 
         // Drop the daemon to clean up.
@@ -1121,7 +1121,7 @@ mod tests {
         // There isn't any way in this rust fuse handler to wait for
         // the filesystem to be ready. Session.initialized isn't
         // accessible from BackgroundSession.
-        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be ready.");
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
         run_ls(&mnt_str);
@@ -1147,7 +1147,7 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be ready.");
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
@@ -1186,7 +1186,7 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 1s, to wait for the FS to be ready, because shitty");
+        info!("Sleeping for 1s, to wait for the FS to be ready.");
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 

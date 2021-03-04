@@ -30,10 +30,10 @@ extern crate rayon;
 extern crate time;
 
 mod auth;
-mod gcs;
 mod errors;
 mod fs;
+mod gcs;
 
+pub use self::fs::GCSFS;
 pub use self::gcs::Bucket;
 pub use self::gcs::Object;
-pub use self::fs::GCSFS;

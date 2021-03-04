@@ -567,6 +567,10 @@ mod tests {
         let _ = env_logger::builder().is_test(true).try_init();
     }
 
+    fn test_bucket() -> String {
+        std::env::var("GCSFUSER_TEST_BUCKET").expect("You must provide a read/write bucket")
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn get_landsat() {
         init();
@@ -580,8 +584,8 @@ mod tests {
     async fn get_private_bucket() {
         init();
 
-        let private_bucket = "boulos-vm-ml";
-        let bucket = get_bucket(private_bucket).await.unwrap();
+        let private_bucket = test_bucket();
+        let bucket = get_bucket(&private_bucket).await.unwrap();
         println!("Got back bucket {:#?}", bucket)
     }
 
@@ -589,9 +593,15 @@ mod tests {
     async fn get_private_object() {
         init();
 
-        let object_url = Url::parse(
-            "https://www.googleapis.com/storage/v1/b/boulos-hadoop/o/bdutil-staging%2fhadoop-m%2f20150202-172447-58j%2fbq-mapred-template.xml"
-        ).unwrap();
+        let private_bucket = test_bucket();
+        let filename = "get_private_object.txt";
+
+        let url = format!(
+            "https://www.googleapis.com/storage/v1/b/{}/o/{}",
+            private_bucket, filename
+        );
+
+        let object_url = Url::parse(&url).unwrap();
         let object: Object = get_object(object_url).await.unwrap();
         println!("Object has {} bytes", object.size);
 
@@ -654,12 +664,12 @@ mod tests {
 
         let client = new_client();
 
-        let bucket_str = "boulos-rustgcs";
+        let bucket_str = test_bucket();
 
         let filename = "write_private_obj.txt";
 
         // Get us a handle to a resumable upload.
-        let mut cursor = create_object_with_client(&client, bucket_str, filename)
+        let mut cursor = create_object_with_client(&client, &bucket_str, filename)
             .await
             .unwrap();
 
@@ -685,7 +695,7 @@ mod tests {
 
         let client = new_client();
 
-        let bucket_str = "boulos-rustgcs";
+        let bucket_str = test_bucket();
 
         let filename = "write_object_race.txt";
 
@@ -694,7 +704,7 @@ mod tests {
 
         let original_obj = {
             // Write out the original value to our file.
-            let mut cursor = create_object_with_client(&client, bucket_str, filename)
+            let mut cursor = create_object_with_client(&client, &bucket_str, filename)
                 .await
                 .unwrap();
             let result =
@@ -712,7 +722,7 @@ mod tests {
 
         let new_obj = {
             // Now, write over the object again with the new data.
-            let mut cursor = create_object_with_client(&client, bucket_str, filename)
+            let mut cursor = create_object_with_client(&client, &bucket_str, filename)
                 .await
                 .unwrap();
             let result =
@@ -745,34 +755,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_list_objects() {
-        init();
-
-        let client = new_client();
-
-        let bucket = "boulos-hadoop";
-        let prefix = "bdutil-staging";
-        let delim = "/";
-
-        let (objects, _) = list_objects(&client, bucket, Some(prefix), Some(delim))
-            .await
-            .unwrap();
-        println!("Got {} objects", objects.len());
-        println!("Dump:\n\n{:#?}", objects);
-
-        let (all_objects, _) = list_objects(&client, bucket, None, None).await.unwrap();
-        println!("Got {} objects", all_objects.len());
-        println!("Dump:\n\n{:#?}", all_objects);
-
-        let (only_top_level, prefixes) = list_objects(&client, bucket, None, Some(delim))
-            .await
-            .unwrap();
-        println!("Got {} objects", only_top_level.len());
-        println!("Dump:\n\n{:#?}", only_top_level);
-        println!("Prefixes:\n\n{:#?}", prefixes);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_list_paginated() {
         init();
 
@@ -787,6 +769,13 @@ mod tests {
             .unwrap();
         println!("Got {} objects", objects.len());
         println!("prefixes: {:#?}", prefixes);
-        println!("objects: {:#?}", objects)
+        println!("objects: {:#?}", objects);
+
+        let (only_top_level, prefixes) = list_objects(&client, bucket, None, Some(delim))
+            .await
+            .unwrap();
+        println!("Got {} objects", only_top_level.len());
+        println!("Dump:\n\n{:#?}", only_top_level);
+        println!("Prefixes:\n\n{:#?}", prefixes);
     }
 }
