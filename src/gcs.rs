@@ -292,7 +292,7 @@ async fn _do_resumable_upload(
     data: &[u8],
     finalize: bool,
 ) -> Result<Option<Object>, HttpError> {
-    if data.len() == 0 && !finalize {
+    if data.is_empty() && !finalize {
         error!("Empty data for non-finalize");
         return Err(HttpError::Body);
     }
@@ -390,7 +390,7 @@ pub async fn append_bytes_with_client(
         return Ok(data.len());
     }
 
-    let remaining = if cursor.buffer.len() > 0 {
+    let remaining = if !cursor.buffer.is_empty() {
         // First fill up the buffer.
         let (left, right) = data.split_at(buffer_remaining);
         cursor.buffer.extend_from_slice(left);

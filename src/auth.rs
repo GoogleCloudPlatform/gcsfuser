@@ -90,8 +90,9 @@ async fn get_token() -> Result<Option<String>, HttpError> {
             ..
         } => {
             let response = do_http_request(request).await?;
-            let token = provider.parse_token_response(scope_hash, response).unwrap();
-            token
+
+            // Parse and unwrap the token.
+            provider.parse_token_response(scope_hash, response).unwrap()
         }
         TokenOrRequest::Token(token) => token,
     };

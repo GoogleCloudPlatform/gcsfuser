@@ -98,7 +98,7 @@ impl GCSFS {
         // Grab an inode. We pre-increment so that the root inode gets 1.
         let mut data = self.inode_counter.lock().unwrap();
         *data += 1;
-        return *data;
+        *data
     }
 
     fn make_fh(&self, cursor: super::gcs::ResumableUploadCursor) -> u64 {
@@ -113,7 +113,6 @@ impl GCSFS {
     // I'm not ready to use this, but I'm going to want it.
     fn drop_fh(&self, fh: u64) {
         let _ = self.file_handles.write().unwrap().remove(&fh);
-        return;
     }
 
     fn load_file(&self, _full_path: String, obj: Object) -> Inode {
@@ -134,9 +133,9 @@ impl GCSFS {
             ino: inode,
             size: obj.size,
             blocks: 1, /* grr. obj.size / blksize? */
-            atime: atime,
-            mtime: mtime,
-            ctime: ctime,
+            atime,
+            mtime,
+            ctime,
             crtime: ctime,
             kind: FileType::RegularFile,
             perm: 0o755, /* Mark everything as 755 */
@@ -152,7 +151,7 @@ impl GCSFS {
         self.inode_to_attr.write().unwrap().insert(inode, file_attr);
         self.inode_to_obj.write().unwrap().insert(inode, obj);
 
-        return inode;
+        inode
     }
 
     // Given a bucket, and a prefix (the directory), load it
@@ -176,7 +175,7 @@ impl GCSFS {
                 super::gcs::list_objects(
                     &self.gcs_client,
                     bucket_clone.as_ref(),
-                    prefix_clone.as_ref().map(String::as_str),
+                    prefix_clone.as_deref(),
                     Some("/"),
                 )
                 .await
@@ -285,12 +284,12 @@ impl GCSFS {
         self.directory_map.write().unwrap().insert(
             dir_inode,
             PsuedoDir {
-                name: prefix_for_load.to_string(),
+                name: prefix_for_load,
                 entries: dir_entries,
             },
         );
 
-        return dir_inode;
+        dir_inode
     }
 }
 
@@ -543,7 +542,7 @@ impl Filesystem for GCSFS {
             mtime: now,
             ctime: now,
             crtime: now,
-            kind: kind,
+            kind,
             perm: 0o755, /* We could use mode, but whatever */
             nlink: match kind {
                 FileType::RegularFile => 1,
@@ -574,7 +573,7 @@ impl Filesystem for GCSFS {
             dir_map_lock.insert(
                 inode,
                 PsuedoDir {
-                    name: search_name.clone(),
+                    name: search_name,
                     entries: sub_entries,
                 },
             );
@@ -603,7 +602,7 @@ impl Filesystem for GCSFS {
             inode, fh, offset
         );
 
-        let fh_clone = fh.clone();
+        let fh_clone = fh;
         let mut fh_map = self.file_handles.write().unwrap();
         let cursor_or_none = fh_map.get_mut(&fh_clone);
 
@@ -613,7 +612,7 @@ impl Filesystem for GCSFS {
             return;
         }
 
-        let inode_clone = inode.clone();
+        let inode_clone = inode;
         let mut attr_map = self.inode_to_attr.write().unwrap();
         let attr_or_none = attr_map.get_mut(&inode_clone);
         if attr_or_none.is_none() {
@@ -680,7 +679,7 @@ impl Filesystem for GCSFS {
 
         let now = SystemTime::now();
 
-        let fh_clone = fh.clone();
+        let fh_clone = fh;
         let mut fh_map = self.file_handles.write().unwrap();
         let cursor_or_none = fh_map.get_mut(&fh_clone);
 
@@ -690,7 +689,7 @@ impl Filesystem for GCSFS {
             return;
         }
 
-        let inode_clone = inode.clone();
+        let inode_clone = inode;
         let mut attr_map = self.inode_to_attr.write().unwrap();
         let attr_or_none = attr_map.get_mut(&inode_clone);
         if attr_or_none.is_none() {
