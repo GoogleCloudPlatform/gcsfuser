@@ -30,7 +30,9 @@ pub type Inode = u64;
 // TODO(boulos): What's a reasonable TTL? Since we're focused on
 // read-only, let's set at least 30s. Amusingly, Free BSD now treats
 // *all* numbers > 0 as "cache forever" (which is probably what we
-// want, with invalidation)
+// want, with invalidation). Capitalizing the S for seconds would be
+// confusing, so disabling that warning.
+#[allow(non_upper_case_globals)]
 const TTL_30s: Duration = Duration::from_secs(30);
 
 // It's not clear if anything cares about this.
@@ -107,19 +109,21 @@ impl GCSFS {
         fh
     }
 
+    #[allow(dead_code)]
+    // I'm not ready to use this, but I'm going to want it.
     fn drop_fh(&self, fh: u64) {
         let _ = self.file_handles.write().unwrap().remove(&fh);
         return;
     }
 
-    fn load_file(&self, full_path: String, obj: Object) -> Inode {
+    fn load_file(&self, _full_path: String, obj: Object) -> Inode {
         let inode = self.get_inode();
 
         // NOTE(boulos): This is pretty noisy on boot and env_logger doesn't seem to have
         // some sort of "super noisy debug". So comment in/out if you need to debugg the
         // loading process.
 
-        //debug!("   GCSFS. Loading {}", full_path);
+        //debug!("   GCSFS. Loading {}", _full_path);
 
         let mtime: SystemTime = obj.updated.into();
         let ctime: SystemTime = obj.time_created.into();
@@ -466,7 +470,7 @@ impl Filesystem for GCSFS {
         let mut dir_map_lock = self.directory_map.write().unwrap();
 
         // Find the parent in the directory map.
-        let mut parent_ent = dir_map_lock.get_mut(&parent);
+        let parent_ent = dir_map_lock.get_mut(&parent);
 
         // NOTE(boulos): I think FUSE does this check already.
         if parent_ent.is_none() {
@@ -475,8 +479,8 @@ impl Filesystem for GCSFS {
             return;
         }
 
-        let mut parent_dir = parent_ent.unwrap();
-        let mut dir_entries = &mut parent_dir.entries;
+        let parent_dir = parent_ent.unwrap();
+        let dir_entries = &mut parent_dir.entries;
 
         let search_name = name.to_str().unwrap().to_string();
         let full_name = match parent_dir.name.len() {
@@ -601,7 +605,7 @@ impl Filesystem for GCSFS {
 
         let fh_clone = fh.clone();
         let mut fh_map = self.file_handles.write().unwrap();
-        let mut cursor_or_none = fh_map.get_mut(&fh_clone);
+        let cursor_or_none = fh_map.get_mut(&fh_clone);
 
         if cursor_or_none.is_none() {
             error!("write(): didn't find the fh {}", fh);
@@ -611,14 +615,14 @@ impl Filesystem for GCSFS {
 
         let inode_clone = inode.clone();
         let mut attr_map = self.inode_to_attr.write().unwrap();
-        let mut attr_or_none = attr_map.get_mut(&inode_clone);
+        let attr_or_none = attr_map.get_mut(&inode_clone);
         if attr_or_none.is_none() {
             error!("write(): Didn't find inode {}", inode);
             reply.error(libc::EBADF);
             return;
         }
 
-        let mut cursor = cursor_or_none.unwrap();
+        let cursor = cursor_or_none.unwrap();
         let remaining = cursor.buffer.capacity() - cursor.buffer.len();
         let cursor_position = cursor.offset + (cursor.buffer.len() as u64);
 
@@ -678,7 +682,7 @@ impl Filesystem for GCSFS {
 
         let fh_clone = fh.clone();
         let mut fh_map = self.file_handles.write().unwrap();
-        let mut cursor_or_none = fh_map.get_mut(&fh_clone);
+        let cursor_or_none = fh_map.get_mut(&fh_clone);
 
         if cursor_or_none.is_none() {
             error!("flush(): didn't find the fh {}", fh);
@@ -688,14 +692,14 @@ impl Filesystem for GCSFS {
 
         let inode_clone = inode.clone();
         let mut attr_map = self.inode_to_attr.write().unwrap();
-        let mut attr_or_none = attr_map.get_mut(&inode_clone);
+        let attr_or_none = attr_map.get_mut(&inode_clone);
         if attr_or_none.is_none() {
             error!("flush(): Didn't find inode {}", inode);
             reply.error(libc::EBADF);
             return;
         }
 
-        let mut cursor = cursor_or_none.unwrap();
+        let cursor = cursor_or_none.unwrap();
         let result = self.tokio_rt.block_on(async {
             super::gcs::finalize_upload_with_client(&self.gcs_client, cursor).await
         });
@@ -732,15 +736,10 @@ mod tests {
 
     use super::*;
     use std;
-    use std::env;
     use std::fs;
-    use std::fs::File;
-    use std::io;
     use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::process::Command;
-    use std::thread;
-    use std::time;
     use tempdir::TempDir;
     use tempfile::NamedTempFile;
 
@@ -832,20 +831,32 @@ mod tests {
     ) -> fuser::BackgroundSession {
         let fs = GCSFS::new(bucket, prefix);
 
-        let options = [
-            "-o",
-            "rw",
-            "-o",
-            "auto_unmount",
-            "-o",
-            "noatime",
-            "-o",
-            "fsname=gcsfuser",
-            /* "-o", "noappledouble" /* Disable ._. and .DS_Store files */ */
-        ]
-        .iter()
-        .map(|o| o.as_ref())
-        .collect::<Vec<&OsStr>>();
+        // I can't figure out an easy way to have a ro vs rw "let mode
+        // =" that doesn't result in a confused borrow/free
+        // outcome. So push the -o <ro/rw> and then add on the other
+        // ones.
+        let mut options: Vec<&OsStr> = Vec::new();
+        options.push("-o".as_ref());
+        if read_only {
+            options.push("ro".as_ref());
+        } else {
+            options.push("rw".as_ref());
+        }
+
+        options.extend(
+            [
+                "-o",
+                "auto_unmount",
+                "-o",
+                "noatime",
+                "-o",
+                "fsname=gcsfuser",
+                /* "-o", "noappledouble" /* Disable ._. and .DS_Store files */ */
+            ]
+            .iter()
+            .map(|o| o.as_ref())
+            .collect::<Vec<&OsStr>>(),
+        );
 
         info!(
             "Attempting to mount gcsfs @ {} with {:#?}",
@@ -937,8 +948,6 @@ mod tests {
         let to_open = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
         info!("Try to open '{}'", to_open);
 
-        use std::os::unix::fs::OpenOptionsExt;
-
         let mut fh = std::fs::OpenOptions::new()
             .read(true)
             .open(to_open)
@@ -1005,7 +1014,7 @@ mod tests {
 
         let mut tmp_file = NamedTempFile::new_in(mnt_str).unwrap();
         info!("Opened '{:#?}'", tmp_file.path());
-        let mut txt_file = tmp_file.as_file_mut();
+        let txt_file = tmp_file.as_file_mut();
 
         let write_result = txt_file.write_all(b"My first words!");
         info!(" got back {:#?}", write_result);
@@ -1040,7 +1049,7 @@ mod tests {
 
         let mut tmp_file = NamedTempFile::new_in(mnt_str).unwrap();
         info!("Opened '{:#?}'", tmp_file.path());
-        let mut file = tmp_file.as_file_mut();
+        let file = tmp_file.as_file_mut();
 
         // Make lots of 0123456789 piles and test out our rounding code.
         let small_amt = 20;
