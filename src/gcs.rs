@@ -22,7 +22,6 @@ extern crate tokio;
 extern crate url;
 
 use chrono::{DateTime, Utc};
-use futures::stream::{self, StreamExt};
 use std::convert::TryInto;
 
 use crate::auth::add_auth_header;
@@ -98,6 +97,8 @@ async fn do_async_request(
     Ok(hyper::body::to_bytes(response).await.unwrap())
 }
 
+#[allow(dead_code)]
+// get_bucket isn't used by fs, but I don't want to mark it test only.
 async fn get_bucket(bucket_str: &str) -> Result<Bucket, HttpError> {
     debug!("Looking to request: {:#?}", bucket_str);
     let client = new_client();
@@ -121,6 +122,8 @@ async fn get_bucket(bucket_str: &str) -> Result<Bucket, HttpError> {
     Ok(bucket)
 }
 
+#[allow(dead_code)]
+// get_object isn't used by fs, but I don't want to mark it test only.
 async fn get_object(url: Url) -> Result<Object, HttpError> {
     debug!("Looking to request: {:#?}", url);
 
@@ -142,6 +145,8 @@ async fn get_object(url: Url) -> Result<Object, HttpError> {
     Ok(object)
 }
 
+#[allow(dead_code)]
+// get_bytes isn't used by fs, but I don't want to mark it test only.
 async fn get_bytes(obj: &Object, offset: u64, how_many: u64) -> Result<Vec<u8>, HttpError> {
     let client = new_client();
     return get_bytes_with_client(&client, obj, offset, how_many).await;
@@ -292,6 +297,14 @@ async fn _do_resumable_upload(
         return Err(HttpError::Body);
     }
 
+    if data.len() % (256 * 1024) != 0 && !finalize {
+        error!(
+            "Asked to append {} bytes which isn't a multiple of 256 KiB",
+            data.len()
+        );
+        return Err(HttpError::Body);
+    }
+
     let last_byte = match data.len() {
         0 => offset,
         _ => offset + (data.len() as u64) - 1,
@@ -314,7 +327,7 @@ async fn _do_resumable_upload(
     // Hopefully this works with empty bodies.
     let body = hyper::body::Bytes::copy_from_slice(data);
     let chunked: Vec<Result<_, std::io::Error>> = vec![Ok(body)];
-    let chunk_stream = stream::iter(chunked);
+    let chunk_stream = futures::stream::iter(chunked);
     let body = hyper::Body::wrap_stream(chunk_stream);
 
     let request = hyper::Request::builder()
@@ -423,7 +436,7 @@ pub async fn append_bytes_with_client(
             client,
             &cursor.session_uri,
             cursor.offset,
-            remaining,
+            full_chunks,
             false, /* not finalizing */
         )
         .await;
@@ -675,18 +688,64 @@ mod tests {
 
         let bytes = "Hello, GCS!";
 
-        // Do the write in a single shot.
-        let result = _do_resumable_upload(&client, &cursor.session_uri, 0, bytes.as_bytes(), true)
+        let written = append_bytes_with_client(&client, &mut cursor, bytes.as_bytes())
             .await
             .unwrap();
+        // Make sure we get back the right length.
+        assert_eq!(written, bytes.len());
+        // Now finalize
+        let result = finalize_upload_with_client(&client, &mut cursor).await;
 
         match result {
-            Some(obj) => println!(
+            Ok(obj) => println!(
                 "Obj has size {} and generation {}",
                 obj.size, obj.generation
             ),
-            None => panic!("Didn't get back an Object!"),
+            Err(e) => panic!("Got error {:#?}", e),
         };
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_object_chunks() {
+        init();
+
+        let client = new_client();
+
+        let bucket_str = test_bucket();
+
+        let filename = "write_chunk_obj.txt";
+
+        // Get us a handle to a resumable upload.
+        let mut cursor = create_object_with_client(&client, &bucket_str, filename)
+            .await
+            .unwrap();
+
+        let lengths = vec![
+            20,
+            350 * 1024,
+            512 * 1024 - (350 * 1024 - 20),
+            1024 * 1024,
+            384 * 1024,
+        ];
+        let total_length: u64 = lengths.iter().sum();
+
+        for length in lengths.iter() {
+            // Make ascii text
+            let bytes: Vec<u8> = (0..*length).map(|x| (48 + (x % 10)) as u8).collect();
+            let written = append_bytes_with_client(&client, &mut cursor, &bytes)
+                .await
+                .unwrap();
+            // Make sure we get back the right length.
+            assert_eq!(written, bytes.len());
+        }
+
+        // Now finalize
+        let obj = finalize_upload_with_client(&client, &mut cursor)
+            .await
+            .expect("Expected an object!");
+
+        // Check that the length is the same as all our appends.
+        assert_eq!(obj.size, total_length);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -707,14 +766,17 @@ mod tests {
             let mut cursor = create_object_with_client(&client, &bucket_str, filename)
                 .await
                 .unwrap();
-            let result =
-                _do_resumable_upload(&client, &cursor.session_uri, 0, original.as_bytes(), true)
-                    .await
-                    .unwrap();
+            let written = append_bytes_with_client(&client, &mut cursor, original.as_bytes())
+                .await
+                .unwrap();
+            // Make sure we get back the right length.
+            assert_eq!(written, original.len());
+            // Now finalize
+            let result = finalize_upload_with_client(&client, &mut cursor).await;
 
             match result {
-                Some(obj) => obj,
-                None => panic!("Expected to get back an object..."),
+                Ok(obj) => obj,
+                Err(_) => panic!("Expected to get back an object..."),
             }
         };
 
@@ -725,13 +787,18 @@ mod tests {
             let mut cursor = create_object_with_client(&client, &bucket_str, filename)
                 .await
                 .unwrap();
-            let result =
-                _do_resumable_upload(&client, &cursor.session_uri, 0, new_value.as_bytes(), true)
-                    .await
-                    .unwrap();
+
+            let written = append_bytes_with_client(&client, &mut cursor, new_value.as_bytes())
+                .await
+                .unwrap();
+            // Make sure we get back the right length.
+            assert_eq!(written, new_value.len());
+            // And finalize
+            let result = finalize_upload_with_client(&client, &mut cursor).await;
+
             match result {
-                Some(obj) => obj,
-                None => panic!("Expected to get back an object..."),
+                Ok(obj) => obj,
+                Err(_) => panic!("Expected to get back an object..."),
             }
         };
 

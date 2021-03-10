@@ -35,10 +35,11 @@ straightforward ```cargo test```:
 
 ```
 failures:
-    bucket::tests::get_private_bucket
-    bucket::tests::get_private_object
-    bucket::tests::write_object_race
-    bucket::tests::write_private_object
     fs::tests::large_write
     fs::tests::small_write
+    gcs::tests::get_private_bucket
+    gcs::tests::get_private_object
+    gcs::tests::write_object_chunks
+    gcs::tests::write_object_race
+    gcs::tests::write_private_object
 ```

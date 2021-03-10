@@ -73,7 +73,10 @@ pub struct GCSFS {
 
 impl GCSFS {
     pub fn new(bucket: String, prefix: Option<String>) -> Self {
-        info!("Making a GCSFS for Bucket {} w/ Prefix {:#?}!", bucket, prefix);
+        info!(
+            "Making a GCSFS for Bucket {} w/ Prefix {:#?}!",
+            bucket, prefix
+        );
         GCSFS {
             inode_to_attr: RwLock::new(HashMap::new()),
             inode_to_obj: RwLock::new(HashMap::new()),
@@ -868,7 +871,8 @@ mod tests {
     }
 
     pub fn mount_tempdir_rw<'a>(mountpoint: PathBuf) -> fuser::BackgroundSession {
-        let bucket = std::env::var("GCSFUSER_TEST_BUCKET").expect("You must provide a read/write bucket");
+        let bucket =
+            std::env::var("GCSFUSER_TEST_BUCKET").expect("You must provide a read/write bucket");
 
         mount_bucket(
             bucket,
