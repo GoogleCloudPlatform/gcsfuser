@@ -79,7 +79,8 @@ impl GCSFS {
             "Making a GCSFS for Bucket {} w/ Prefix {:#?}!",
             bucket, prefix
         );
-        GCSFS {
+
+        let result = GCSFS {
             inode_to_attr: RwLock::new(HashMap::new()),
             inode_to_obj: RwLock::new(HashMap::new()),
             directory_map: RwLock::new(HashMap::new()),
@@ -91,7 +92,14 @@ impl GCSFS {
             gcs_prefix: prefix,
             gcs_client: super::gcs::new_client(),
             tokio_rt: tokio::runtime::Runtime::new().unwrap(),
-        }
+        };
+
+        // Load the bucket from the prefix.
+        let root_inode = result.load_dir(result.gcs_prefix.clone(), None);
+        debug!("root inode => {}", root_inode);
+
+        // Now we're ready to be started as a Filesystem.
+        result
     }
 
     fn get_inode(&self) -> Inode {
@@ -295,15 +303,7 @@ impl GCSFS {
 
 impl Filesystem for GCSFS {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), i32> {
-        info!("init!");
-        debug!("debug_logger: init!");
         debug!("Kernelconfig is {:#?}", config);
-
-        let prefix = self.gcs_prefix.clone();
-
-        // Trigger a load from the root of the bucket
-        let root_inode = self.load_dir(prefix, None);
-        debug!("root inode => {}", root_inode);
 
         Ok(())
     }
@@ -854,7 +854,8 @@ mod tests {
                 "noatime",
                 "-o",
                 "fsname=gcsfuser",
-                /* "-o", "noappledouble" /* Disable ._. and .DS_Store files */ */
+                "-o",
+                "noappledouble", /* Disable ._. and .DS_Store files */
             ]
             .iter()
             .map(|o| o.as_ref())
@@ -917,10 +918,6 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 1s, to wait for the FS to be ready.");
-        std::thread::sleep(Duration::from_millis(1000));
-        info!("Awake!");
-
         let to_open = format!("{}/{}/{}", mnt_str, LANDSAT_SUBDIR, LANDSAT_B7_MTL);
         info!("Try to open '{}'", to_open);
         let result = fs::read_to_string(to_open).unwrap();
@@ -938,10 +935,6 @@ mod tests {
         let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
-
-        info!("Sleeping for 1s, to wait for the FS to be ready.");
-        std::thread::sleep(Duration::from_millis(1000));
-        info!("Awake!");
 
         let tif_file = LANDSAT_B7_TIF;
         let sub_dir = LANDSAT_SUBDIR;
@@ -972,10 +965,6 @@ mod tests {
         let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
-
-        info!("Sleeping for 1s, to wait for the FS to be ready.");
-        std::thread::sleep(Duration::from_millis(1000));
-        info!("Awake!");
 
         let tif_file = LANDSAT_B7_TIF;
         let sub_dir = LANDSAT_SUBDIR;
@@ -1008,10 +997,6 @@ mod tests {
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
 
-        info!("Sleeping for 1s, to wait for the FS to be ready.");
-        std::thread::sleep(Duration::from_millis(1000));
-        info!("Awake!");
-
         let mut tmp_file = NamedTempFile::new_in(mnt_str).unwrap();
         info!("Opened '{:#?}'", tmp_file.path());
         let txt_file = tmp_file.as_file_mut();
@@ -1042,10 +1027,6 @@ mod tests {
         let daemon = mount_tempdir_rw(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
-
-        info!("Sleeping for 1s, to wait for the FS to be ready.");
-        std::thread::sleep(Duration::from_millis(1000));
-        info!("Awake!");
 
         let mut tmp_file = NamedTempFile::new_in(mnt_str).unwrap();
         info!("Opened '{:#?}'", tmp_file.path());
@@ -1116,12 +1097,6 @@ mod tests {
 
         let fs = mount_tempdir_ro(mnt);
         info!("mounted fs at {} on thread {:#?}", mnt_str, fs);
-        // There isn't any way in this rust fuse handler to wait for
-        // the filesystem to be ready. Session.initialized isn't
-        // accessible from BackgroundSession.
-        info!("Sleeping for 1s, to wait for the FS to be ready.");
-        std::thread::sleep(Duration::from_millis(1000));
-        info!("Awake!");
         run_ls(&mnt_str);
 
         let subdir = format!("{}/{}", mnt_str, LANDSAT_SUBDIR);
@@ -1142,10 +1117,6 @@ mod tests {
         let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
-
-        info!("Sleeping for 1s, to wait for the FS to be ready.");
-        std::thread::sleep(Duration::from_millis(1000));
-        info!("Awake!");
 
         let tif_file = LANDSAT_B7_TIF;
         let sub_dir = LANDSAT_SUBDIR;
@@ -1179,10 +1150,6 @@ mod tests {
         let daemon = mount_tempdir_ro(mnt);
 
         info!("mounted fs at {} in thread {:#?}", mnt_str, daemon);
-
-        info!("Sleeping for 1s, to wait for the FS to be ready.");
-        std::thread::sleep(Duration::from_millis(1000));
-        info!("Awake!");
 
         let tif_file = LANDSAT_B7_TIF;
         let sub_dir = LANDSAT_SUBDIR;
