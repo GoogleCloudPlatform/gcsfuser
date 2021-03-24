@@ -630,7 +630,7 @@ mod tests {
         init();
 
         let object_url = Url::parse(
-            "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2FPRE%2F044%2F034%2FLC80440342017101LGN00%2FLC80440342017101LGN00_MTL.txt"
+            "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2F01%2F044%2F034%2FLC08_L1GT_044034_20130330_20170310_01_T2%2FLC08_L1GT_044034_20130330_20170310_01_T2_MTL.txt"
         ).unwrap();
         let object: Object = get_object(object_url).await.unwrap();
         println!("Object has {} bytes", object.size);
@@ -649,7 +649,7 @@ mod tests {
         init();
 
         let object_url = Url::parse(
-            "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2FPRE%2F044%2F034%2FLC80440342017101LGN00%2FLC80440342017101LGN00_MTL.txt"
+            "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2F01%2F044%2F034%2FLC08_L1GT_044034_20130330_20170310_01_T2%2FLC08_L1GT_044034_20130330_20170310_01_T2_MTL.txt"
         ).unwrap();
         let object: Object = get_object(object_url).await.unwrap();
         println!("Object has {} bytes", object.size);
@@ -828,7 +828,7 @@ mod tests {
         let client = new_client();
 
         let bucket = "gcp-public-data-landsat";
-        let prefix = "LC08/PRE/044/034/";
+        let prefix = "LC08/01/044/034/";
         let delim = "/";
 
         let (objects, prefixes) = list_objects(&client, bucket, Some(prefix), Some(delim))

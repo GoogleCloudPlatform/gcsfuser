@@ -742,6 +742,10 @@ mod tests {
     use tempdir::TempDir;
     use tempfile::NamedTempFile;
 
+    const LANDSAT_SUBDIR: &str = "LC08_L1GT_044034_20130330_20170310_01_T2";
+    const LANDSAT_B7_TIF: &str = "LC08_L1GT_044034_20130330_20170310_01_T2_B7.TIF";
+    const LANDSAT_B7_MTL: &str = "LC08_L1GT_044034_20130330_20170310_01_T2_MTL.txt";
+
     fn init() {
         // https://docs.rs/env_logger/0.8.2/env_logger/index.html#capturing-logs-in-tests
         let _ = env_logger::builder().is_test(true).try_init();
@@ -867,10 +871,8 @@ mod tests {
 
     pub fn mount_tempdir_ro<'a>(mountpoint: PathBuf) -> fuser::BackgroundSession {
         let bucket = "gcp-public-data-landsat";
-        // Simple single dir.
-        //let prefix = "LC08/PRE/044/034/LC80440342017101LGN00/";
         // One level up to test subdir loading.
-        let prefix = "LC08/PRE/044/034/";
+        let prefix = "LC08/01/044/034/";
 
         mount_bucket(
             bucket.to_string(),
@@ -919,8 +921,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
-        let txt_file = "LC80440342017101LGN00/LC80440342017101LGN00_MTL.txt";
-        let to_open = format!("{}/{}", mnt_str, txt_file);
+        let to_open = format!("{}/{}/{}", mnt_str, LANDSAT_SUBDIR, LANDSAT_B7_MTL);
         info!("Try to open '{}'", to_open);
         let result = fs::read_to_string(to_open).unwrap();
         info!(" got back {}", result);
@@ -942,8 +943,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
-        let tif_file = "LC80440342017101LGN00_B7.TIF";
-        let sub_dir = "LC80440342017101LGN00";
+        let tif_file = LANDSAT_B7_TIF;
+        let sub_dir = LANDSAT_SUBDIR;
         let to_open = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
         info!("Try to open '{}'", to_open);
 
@@ -976,8 +977,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
-        let tif_file = "LC80440342017101LGN00_B7.TIF";
-        let sub_dir = "LC80440342017101LGN00";
+        let tif_file = LANDSAT_B7_TIF;
+        let sub_dir = LANDSAT_SUBDIR;
         let to_open = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
         info!("Try to open '{}'", to_open);
 
@@ -1123,7 +1124,7 @@ mod tests {
         info!("Awake!");
         run_ls(&mnt_str);
 
-        let subdir = format!("{}/{}", mnt_str, "LC80440342013170LGN00");
+        let subdir = format!("{}/{}", mnt_str, LANDSAT_SUBDIR);
         info!("now ls in the subdir {}", subdir);
         run_ls(&subdir);
         drop(fs);
@@ -1146,8 +1147,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
-        let tif_file = "LC80440342017101LGN00_B7.TIF";
-        let sub_dir = "LC80440342017101LGN00";
+        let tif_file = LANDSAT_B7_TIF;
+        let sub_dir = LANDSAT_SUBDIR;
         let full_path = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
         let dst_path = format!(
             "{}/{}",
@@ -1183,8 +1184,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1000));
         info!("Awake!");
 
-        let tif_file = "LC80440342017101LGN00_B7.TIF";
-        let sub_dir = "LC80440342017101LGN00";
+        let tif_file = LANDSAT_B7_TIF;
+        let sub_dir = LANDSAT_SUBDIR;
         let full_path = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
 
         let dst_path = format!(
