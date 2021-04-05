@@ -163,6 +163,19 @@ pub async fn get_bytes_with_client(
         how_many, offset, obj.name, obj.self_link
     );
 
+    if how_many == 0 {
+        debug!("how_many = 0. You must ask for at least one byte");
+        return Err(HttpError::Body);
+    }
+
+    // TODO(boulos): Should we add logic here to test that offset +
+    // how_many <= obj.size? It's *likely* a client error, but who are
+    // we to decide? (Note: obj.size shouldn't be out of date, because
+    // we also enforce generation/meta-generation match, but we want
+    // to make that optional). Leaving it free allows clients to
+    // "overfetch" and let GCS decide and return the short read, or an
+    // error if offset > obj.size.
+
     // Use the self_link from the object as the url, but add ?alt=media
     let mut object_url = Url::parse(&obj.self_link).unwrap();
     let byte_range = format!("bytes={}-{}", offset, offset + how_many - 1);
@@ -205,6 +218,11 @@ pub async fn get_bytes_with_client(
         return Err(HttpError::Status(response.status()));
     }
 
+    // TODO(boulos): This might be where we're supposed to tell hyper
+    // that we expect how_many bytes and want it to read straight into
+    // that... though we want that to be a SizeHint, not an absolute,
+    // given the Range request ignoring / "send back a 200" behavior
+    // mentioned below.
     let written = hyper::body::to_bytes(response).await.unwrap();
     debug!(
         "Got back {} bytes. Took {:#?}",
@@ -575,6 +593,13 @@ pub async fn list_objects(
 mod tests {
     use super::*;
     extern crate env_logger;
+
+    const LANDSAT_BUCKET: &str = "gcp-public-data-landsat";
+    const LANDSAT_PREFIX: &str = "LC08/01/044/034/";
+    const LANDSAT_SUBDIR: &str = "LC08_L1GT_044034_20130330_20170310_01_T2";
+    const LANDSAT_B7_TIF: &str = "LC08_L1GT_044034_20130330_20170310_01_T2_B7.TIF";
+    const LANDSAT_B7_MTL: &str = "LC08_L1GT_044034_20130330_20170310_01_T2_MTL.txt";
+
     fn init() {
         // https://docs.rs/env_logger/0.8.2/env_logger/index.html#capturing-logs-in-tests
         let _ = env_logger::builder().is_test(true).try_init();
@@ -584,12 +609,38 @@ mod tests {
         std::env::var("GCSFUSER_TEST_BUCKET").expect("You must provide a read/write bucket")
     }
 
+    fn landsat_obj_url(object_str: &str) -> Url {
+        let mut object_url = Url::parse("https://www.googleapis.com/storage/v1/b").unwrap();
+        // Each *push* url encodeds the argument and then also adds a
+        // *real* slash *before* appending.
+        object_url
+            .path_segments_mut()
+            .unwrap()
+            .push(LANDSAT_BUCKET)
+            .push("o")
+            .push(object_str);
+
+        object_url
+    }
+
+    fn landsat_big_obj_url() -> Url {
+        // Make the full object "name".
+        let object_str = format!("{}{}/{}", LANDSAT_PREFIX, LANDSAT_SUBDIR, LANDSAT_B7_TIF);
+
+        landsat_obj_url(&object_str)
+    }
+    fn landsat_small_obj_url() -> Url {
+        // Make the full object "name".
+        let object_str = format!("{}{}/{}", LANDSAT_PREFIX, LANDSAT_SUBDIR, LANDSAT_B7_MTL);
+
+        landsat_obj_url(&object_str)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_landsat() {
+    async fn get_landsat_bucket() {
         init();
 
-        let landsat = "gcp-public-data-landsat";
-        let bucket = get_bucket(landsat).await.unwrap();
+        let bucket = get_bucket(LANDSAT_BUCKET).await.unwrap();
         println!("Got back bucket {:#?}", bucket)
     }
 
@@ -629,9 +680,9 @@ mod tests {
     async fn get_public_object() {
         init();
 
-        let object_url = Url::parse(
-            "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2F01%2F044%2F034%2FLC08_L1GT_044034_20130330_20170310_01_T2%2FLC08_L1GT_044034_20130330_20170310_01_T2_MTL.txt"
-        ).unwrap();
+        let object_url = landsat_small_obj_url();
+        println!("Going to request object {}", object_url.as_str());
+
         let object: Object = get_object(object_url).await.unwrap();
         println!("Object has {} bytes", object.size);
 
@@ -648,9 +699,7 @@ mod tests {
     async fn get_object_invalid() {
         init();
 
-        let object_url = Url::parse(
-            "https://www.googleapis.com/storage/v1/b/gcp-public-data-landsat/o/LC08%2F01%2F044%2F034%2FLC08_L1GT_044034_20130330_20170310_01_T2%2FLC08_L1GT_044034_20130330_20170310_01_T2_MTL.txt"
-        ).unwrap();
+        let object_url = landsat_small_obj_url();
         let object: Object = get_object(object_url).await.unwrap();
         println!("Object has {} bytes", object.size);
 
@@ -669,6 +718,58 @@ mod tests {
         // I cannot figure out how to make this work. But I wish I could.
         //assert_eq!(expect_404.unwrap_err(),
         //	   HttpError::Status(http::StatusCode::NOT_FOUND));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_public_bytes_bad_range() {
+        init();
+
+        let object_url = landsat_small_obj_url();
+        let object: Object = get_object(object_url).await.unwrap();
+
+        // If we don't ask for any bytes, we get an error.
+        let result = get_bytes(&object, 0, 0).await;
+        assert!(result.is_err());
+
+        // Changing the offset but no bytes, still gets an error.
+        let result = get_bytes(&object, 100, 0).await;
+        assert!(result.is_err());
+
+        // But *overfetching* (the small obj is 8454 bytes), we shouldn't get an error.
+        let result = get_bytes(&object, 0, 10000).await;
+        assert!(result.is_ok());
+
+        // Trying to *start* past the end => 416 "Range Not Satisifiable".
+        let result = get_bytes(&object, 10000, 1).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_public_bytes_large_read() {
+        init();
+
+        let client = new_client();
+
+        let object_url = landsat_big_obj_url();
+        println!("Going to request obj (url) {}", object_url);
+
+        let object: Object = get_object(object_url).await.unwrap();
+        println!("Object has {} bytes", object.size);
+
+        assert!(
+            object.size > 1024 * 1024,
+            "Object must be at least 1MB in size!"
+        );
+
+        // Issue a 1MB read. TODO(boulos): Ensure that we're doing it
+        // in "one shot" (we aren't currently! hyper is breaking it up
+        // into 16 KiB reads).
+        let bytes: Vec<u8> = get_bytes_with_client(&client, &object, 0, 1024 * 1024)
+            .await
+            .unwrap();
+
+        // Make sure we got back the entire 1MB read.
+        assert_eq!(bytes.len(), 1024 * 1024);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -827,8 +928,8 @@ mod tests {
 
         let client = new_client();
 
-        let bucket = "gcp-public-data-landsat";
-        let prefix = "LC08/01/044/034/";
+        let bucket = LANDSAT_BUCKET;
+        let prefix = LANDSAT_PREFIX;
         let delim = "/";
 
         let (objects, prefixes) = list_objects(&client, bucket, Some(prefix), Some(delim))
