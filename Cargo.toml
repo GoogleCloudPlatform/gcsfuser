@@ -8,6 +8,11 @@ edition = "2018"
 description = "A library for accessing Google Cloud Storage via its JSON API."
 license = "Apache-2.0"
 
+[features]
+# Optional "unreliable" mode instead of using truncated, exponential backoff.
+# Mostly just for testing / verifying purposes.
+unreliable = []
+
 [dependencies]
 bytes = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
@@ -23,6 +28,7 @@ libc = "0.2"
 log = "0.4"
 oauth2 = "2.0"
 openssl = "0.10"
+rand = { version = "0.8", features = [ "small_rng" ] }
 rayon = "1.5"
 serde = "1.0"
 serde_derive = "1.0"

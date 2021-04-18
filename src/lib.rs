@@ -33,6 +33,7 @@ mod auth;
 mod errors;
 mod fs;
 mod gcs;
+mod http;
 
 pub use self::fs::GCSFS;
 pub use self::gcs::Bucket;

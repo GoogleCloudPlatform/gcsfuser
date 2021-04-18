@@ -23,7 +23,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::Object;
+use crate::gcs::{Object, ResumableUploadCursor};
+use crate::http::GcsHttpClient;
 
 pub type Inode = u64;
 
@@ -60,14 +61,14 @@ pub struct GCSFS {
     // So we can refer into the file handle map.
     fh_counter: AtomicU64,
 
-    file_handles: RwLock<HashMap<u64, super::gcs::ResumableUploadCursor>>,
+    file_handles: RwLock<HashMap<u64, ResumableUploadCursor>>,
 
     // GCS configuration
     gcs_bucket: String,
     gcs_prefix: Option<String>,
 
     // Persistent client
-    gcs_client: super::gcs::GcsHttpClient,
+    gcs_client: GcsHttpClient,
 
     // And our runtime for waiting out async.
     tokio_rt: tokio::runtime::Runtime,
@@ -90,7 +91,7 @@ impl GCSFS {
             file_handles: RwLock::new(HashMap::new()),
             gcs_bucket: bucket,
             gcs_prefix: prefix,
-            gcs_client: super::gcs::new_client(),
+            gcs_client: super::http::new_client(),
             tokio_rt: tokio::runtime::Runtime::new().unwrap(),
         };
 
@@ -109,7 +110,7 @@ impl GCSFS {
         *data
     }
 
-    fn make_fh(&self, cursor: super::gcs::ResumableUploadCursor) -> u64 {
+    fn make_fh(&self, cursor: ResumableUploadCursor) -> u64 {
         let fh = self.fh_counter.fetch_add(1, Ordering::SeqCst);
         // Put the cursor into our hash map.
         self.file_handles.write().unwrap().insert(fh, cursor);
@@ -315,9 +316,10 @@ impl Filesystem for GCSFS {
             // TODO(boulos): Is this the full name, or just the portion? (I believe just portion)
             let search_name = name.to_str().unwrap().to_string();
             for child_pair in dir_ent.entries.iter() {
-                debug!(
+                trace!(
                     "  Is search target '{}' == dir_entry '{}'?",
-                    search_name, child_pair.0
+                    search_name,
+                    child_pair.0
                 );
                 if child_pair.0 == search_name {
                     if let Some(attr) = self.inode_to_attr.read().unwrap().get(&child_pair.1) {
@@ -598,8 +600,11 @@ impl Filesystem for GCSFS {
     ) {
         let now = SystemTime::now();
         debug!(
-            "Got a write request. inode={}, fh={}, offset={}",
-            inode, fh, offset
+            "Got a write request. inode={}, fh={}, offset={}, size={}",
+            inode,
+            fh,
+            offset,
+            data.len()
         );
 
         let fh_clone = fh;
@@ -633,7 +638,7 @@ impl Filesystem for GCSFS {
         // Only allow writing at the offset.
         if (offset as u64) != cursor_position {
             error!(
-                "Got a write for offset {}. But cursor is at {} (we only support appending",
+                "Got a write for offset {}. But cursor is at {} (we only support appending)",
                 offset, cursor_position
             );
             reply.error(libc::EINVAL);

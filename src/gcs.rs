@@ -14,7 +14,6 @@
 
 extern crate http;
 extern crate hyper;
-extern crate hyper_rustls;
 extern crate serde;
 extern crate serde_json;
 extern crate serde_with;
@@ -23,13 +22,16 @@ extern crate url;
 
 use chrono::{DateTime, Utc};
 use std::convert::TryInto;
-
-use crate::auth::add_auth_header;
-use crate::errors::HttpError;
 use url::Url;
 
-pub type GcsHttpClient =
-    hyper::client::Client<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>, hyper::Body>;
+use crate::auth::add_auth_header;
+
+use crate::http::{
+    do_gcs_request, new_client, request_with_gcs_retry, GcsHttpClient, GCS_DEFAULT_MAX_BACKOFF,
+    GCS_DEFAULT_TIMEOUT,
+};
+
+use crate::errors::HttpError;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -80,23 +82,6 @@ pub struct ResumableUploadCursor {
     pub buffer: Vec<u8>,
 }
 
-pub fn new_client() -> GcsHttpClient {
-    // NOTE(boulos): Previously, I was passing some default headers
-    // here. Now that bearer_auth is per request, this is less needed,
-    // but we can change that later.
-    let https = hyper_rustls::HttpsConnector::with_native_roots();
-    hyper::Client::builder().build::<_, hyper::Body>(https)
-}
-
-async fn do_async_request(
-    client: &GcsHttpClient,
-    request: hyper::Request<hyper::Body>,
-) -> Result<hyper::body::Bytes, HttpError> {
-    let response = client.request(request).await.unwrap();
-    debug!("{:#?}", response);
-    Ok(hyper::body::to_bytes(response).await.unwrap())
-}
-
 #[allow(dead_code)]
 // get_bucket isn't used by fs, but I don't want to mark it test only.
 async fn get_bucket(bucket_str: &str) -> Result<Bucket, HttpError> {
@@ -110,14 +95,13 @@ async fn get_bucket(bucket_str: &str) -> Result<Bucket, HttpError> {
     let mut builder = hyper::Request::builder().uri(uri);
     add_auth_header(&mut builder).await?;
 
-    let body = hyper::Body::default();
+    let body = hyper::Body::empty();
     let request = builder.body(body).expect("Failed to construct request");
 
     debug!("{:#?}", request);
 
-    let bytes = do_async_request(&client, request).await.unwrap();
-
-    let bucket: Bucket = serde_json::from_slice(&bytes).unwrap();
+    let bytes = do_gcs_request(&client, request).await?;
+    let bucket: Bucket = serde_json::from_slice(bytes.as_ref()).unwrap();
     debug!("{:#?}", bucket);
     Ok(bucket)
 }
@@ -129,17 +113,13 @@ async fn get_object(url: Url) -> Result<Object, HttpError> {
 
     let client = new_client();
     let uri: hyper::Uri = url.into_string().parse()?;
-    let body = hyper::Body::default();
+    let body = hyper::Body::empty();
 
     let mut builder = hyper::Request::builder().uri(uri);
     add_auth_header(&mut builder).await?;
 
     let request = builder.body(body).expect("Failed to construct request");
-    let response = client.request(request).await.unwrap();
-    debug!("{:#?}", response);
-
-    let bytes = hyper::body::to_bytes(response).await.unwrap();
-
+    let bytes = do_gcs_request(&client, request).await?;
     let object: Object = serde_json::from_slice(&bytes).unwrap();
     debug!("{:#?}", object);
     Ok(object)
@@ -198,7 +178,7 @@ pub async fn get_bytes_with_client(
 
     let uri: hyper::Uri = object_url.into_string().parse()?;
 
-    let body = hyper::Body::default();
+    let body = hyper::Body::empty();
 
     let mut builder = http::Request::builder()
         .uri(uri)
@@ -211,19 +191,9 @@ pub async fn get_bytes_with_client(
     let request = builder.body(body).expect("Failed to construct request");
     debug!("Performing range request {:#?}", request);
 
-    let response = client.request(request).await.unwrap();
+    // Do the request (reliably) but bail on error.
+    let written = do_gcs_request(&client, request).await?;
 
-    if !response.status().is_success() {
-        debug!("Request failed. status => {}", response.status());
-        return Err(HttpError::Status(response.status()));
-    }
-
-    // TODO(boulos): This might be where we're supposed to tell hyper
-    // that we expect how_many bytes and want it to read straight into
-    // that... though we want that to be a SizeHint, not an absolute,
-    // given the Range request ignoring / "send back a 200" behavior
-    // mentioned below.
-    let written = hyper::body::to_bytes(response).await.unwrap();
     debug!(
         "Got back {} bytes. Took {:#?}",
         written.len(),
@@ -278,7 +248,13 @@ pub async fn create_object_with_client(
 
     debug!("{:#?}", request);
 
-    let response = client.request(request).await.unwrap();
+    let response = request_with_gcs_retry(
+        &client,
+        request,
+        GCS_DEFAULT_MAX_BACKOFF,
+        GCS_DEFAULT_TIMEOUT,
+    )
+    .await?;
     debug!("{:#?}", response);
 
     if response.status() != hyper::StatusCode::OK {
@@ -361,32 +337,40 @@ async fn _do_resumable_upload(
 
     debug!("{:#?}", request);
 
-    let response = client.request(request).await.unwrap();
-    debug!("{:#?}", response);
+    let response = do_gcs_request(&client, request).await;
 
     if !finalize {
-        // Check that our upload worked. Google uses 308 (Permanent
-        // Redirect) as "Resume Incomplete"
-        if response.status().as_u16() != 308 {
-            return Err(HttpError::Status(response.status()));
+        // Check that our upload worked. We're actually looking for a
+        // 308 "Resume Incomplete" error.
+        if !response.is_err() {
+            debug!("Unexpected Ok() from multi-part upload!");
+            return Err(HttpError::UploadFailed);
         }
 
-        // TODO(boulos): Check the range output in case our bytes are missing.
+        let err = response.unwrap_err();
 
-        // Worked out! But we don't have an Object, yet.
-        return Ok(None);
+        match err {
+            HttpError::Status(status) => {
+                if status.as_u16() == 308 {
+                    // We got a 308! That's "success" for us.
+                    // TODO(boulos): We need to check that the Range
+                    // header response says we uploaded all our
+                    // bytes. But we should do that inside of
+                    // do_gcs_request (somehow) or just use
+                    // request_with_gcs_retry directly here as well.
+                    return Ok(None);
+                }
+                return Err(err);
+            }
+            _ => {
+                // Anything else is also an error.
+                return Err(err);
+            }
+        };
     }
 
-    // Let's deal with finalizing. We get either a 200 or 201.
-    if !response.status().is_success() {
-        let result = HttpError::Status(response.status());
-        let bytes = hyper::body::to_bytes(response).await.unwrap();
-        debug!("error bytes {:#?}", bytes);
-
-        return Err(result);
-    }
-
-    let bytes = hyper::body::to_bytes(response).await.unwrap();
+    // This was our final segment. The response should be an Object.
+    let bytes = response?;
     debug!("response bytes {:#?}", bytes);
 
     let object: Object = serde_json::from_slice(&bytes).unwrap();
@@ -499,6 +483,7 @@ pub async fn finalize_upload_with_client(
     Ok(obj)
 }
 
+// Do a single list object request (i.e., don't follow the next page token).
 async fn _do_one_list_object(
     client: &GcsHttpClient,
     bucket: &str,
@@ -532,20 +517,22 @@ async fn _do_one_list_object(
     let mut builder = http::Request::builder().uri(uri);
     add_auth_header(&mut builder).await?;
 
-    let body = hyper::Body::default();
+    let body = hyper::Body::empty();
     let request = builder
         .body(body)
         .expect("Failed to construct list request");
 
     debug!("{:#?}", request);
-    let bytes = do_async_request(client, request).await.unwrap();
-
+    let bytes = do_gcs_request(client, request).await?;
     let list_response: ListObjectsResponse = serde_json::from_slice(&bytes).unwrap();
     debug!("{:#?}", list_response);
 
     Ok(list_response)
 }
 
+// Perform a list objects request, including following any
+// nextPageToken responses, so that we get the full set of Objects and
+// list of Prefixes (as a Vec<String>).
 pub async fn list_objects(
     client: &GcsHttpClient,
     bucket: &str,
@@ -580,10 +567,6 @@ pub async fn list_objects(
             Some(temp_token_str) => page_token = temp_token_str.clone(),
             None => break,
         }
-
-        // Sleep a bit between requests
-        println!("  Sleeping for 10 ms, to avoid dos block");
-        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
     Ok((objects, prefixes))
@@ -945,5 +928,13 @@ mod tests {
         println!("Got {} objects", only_top_level.len());
         println!("Dump:\n\n{:#?}", only_top_level);
         println!("Prefixes:\n\n{:#?}", prefixes);
+
+        // No delimeter
+        let (all_objects, prefixes) = list_objects(&client, bucket, Some(prefix), None)
+            .await
+            .unwrap();
+        println!("Got {} objects", objects.len());
+        println!("prefixes: {:#?}", prefixes);
+        println!("objects: {:#?}", all_objects);
     }
 }
