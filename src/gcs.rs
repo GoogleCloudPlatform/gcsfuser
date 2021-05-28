@@ -575,6 +575,8 @@ pub async fn list_objects(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::distributions::Alphanumeric;
+    use rand::{thread_rng, Rng};
     extern crate env_logger;
 
     const LANDSAT_BUCKET: &str = "gcp-public-data-landsat";
@@ -619,6 +621,19 @@ mod tests {
         landsat_obj_url(&object_str)
     }
 
+    async fn put_object(bucket: &str, name: &str, media: &[u8]) {
+        let client = &new_client();
+        let mut object_cursor = create_object_with_client(client, bucket, name)
+            .await
+            .unwrap();
+        append_bytes_with_client(client, &mut object_cursor, media)
+            .await
+            .unwrap();
+        finalize_upload_with_client(client, &mut object_cursor)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn get_landsat_bucket() {
         init();
@@ -640,23 +655,48 @@ mod tests {
     async fn get_private_object() {
         init();
 
+        // define the private object
         let private_bucket = test_bucket();
-        let filename = "get_private_object.txt";
+        let want_name = "get_private_object.txt";
 
+        // set up test data
+        let want_len: u64 = 1234;
+        let want_string: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(want_len as usize)
+            .map(char::from)
+            .collect();
+        let want_bytes = want_string.into_bytes();
+        put_object(&private_bucket, &want_name, &want_bytes.to_owned()).await;
+
+        // test getting the private object
         let url = format!(
             "https://www.googleapis.com/storage/v1/b/{}/o/{}",
-            private_bucket, filename
+            private_bucket, want_name
         );
 
+        // get object metadata
         let object_url = Url::parse(&url).unwrap();
-        let object: Object = get_object(object_url).await.unwrap();
-        println!("Object has {} bytes", object.size);
+        let object = get_object(object_url).await.unwrap();
+        assert_eq!(object.size, want_len);
+        assert_eq!(object.name, want_name);
 
-        let bytes: Vec<u8> = get_bytes(&object, 0, 769).await.unwrap();
-        println!("Got back:\n {}", String::from_utf8(bytes).unwrap());
+        // get whole object
+        let got_bytes: Vec<u8> = get_bytes(&object, 0, want_len).await.unwrap();
+        let got_len = got_bytes.len() as u64;
+        assert_eq!(got_len, want_len);
+        assert_eq!(got_bytes, want_bytes);
 
-        let offset_bytes: Vec<u8> = get_bytes(&object, 6, 769).await.unwrap();
-        println!("Got back:\n {}", String::from_utf8(offset_bytes).unwrap());
+        // get partial object
+        let start_offset: u64 = 6;
+        let want_bytes = &want_bytes[start_offset as usize..];
+        let want_len = want_len - start_offset;
+        let got_bytes: Vec<u8> = get_bytes(&object, start_offset, want_len)
+            .await
+            .unwrap();
+        let got_len = got_bytes.len() as u64;
+        assert_eq!(got_len, want_len);
+        assert_eq!(got_bytes, want_bytes);
     }
 
     #[tokio::test(flavor = "multi_thread")]
