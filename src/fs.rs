@@ -154,7 +154,6 @@ impl GCSFS {
             rdev: 0,
             flags: 0,
             blksize: HARDCODED_BLOCKSIZE,
-            padding: 0,
         };
 
         self.inode_to_attr.write().unwrap().insert(inode, file_attr);
@@ -210,7 +209,6 @@ impl GCSFS {
             rdev: 0,
             flags: 0,
             blksize: HARDCODED_BLOCKSIZE,
-            padding: 0,
         };
 
         self.inode_to_attr
@@ -556,7 +554,6 @@ impl Filesystem for GCSFS {
             rdev: 0,
             flags: 0,
             blksize: HARDCODED_BLOCKSIZE,
-            padding: 0,
         };
 
         // Put the node into our inode map
