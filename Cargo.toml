@@ -16,6 +16,7 @@ unreliable = []
 [dependencies]
 bytes = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "2" }
 dirs = "3.0"
 env_logger = "0.8"
 fuser = { version = "0.8", features = ["abi-7-30"] }
