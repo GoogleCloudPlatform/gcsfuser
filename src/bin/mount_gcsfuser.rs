@@ -19,31 +19,31 @@ use fuser::MountOption;
 fn split_gcs_path(path: String) -> Result<(String, Option<String>), &'static str> {
     // If it's not a path-like, just treat it as a bucket
     if !path.starts_with("gs://") {
-	return Ok((path, None))
+        return Ok((path, None));
     }
 
     // We just tested that this is there.
     let remainder = path.strip_prefix("gs://").unwrap();
 
     if let Some(pair) = remainder.split_once('/') {
-	// Destructure.
-	let (bucket, after_slash) = pair;
+        // Destructure.
+        let (bucket, after_slash) = pair;
 
-	// If the after_slash is empty, it's also just a bucket but
-	// they included a trailing slash.
-	if after_slash.is_empty() {
-	    return Ok((bucket.to_string(), None))
-	}
+        // If the after_slash is empty, it's also just a bucket but
+        // they included a trailing slash.
+        if after_slash.is_empty() {
+            return Ok((bucket.to_string(), None));
+        }
 
-	// Make sure the suffix has a trailing slash.
-	if !after_slash.ends_with('/') {
-	    return Err("The gs:// path must end with a trailing slash")
-	}
+        // Make sure the suffix has a trailing slash.
+        if !after_slash.ends_with('/') {
+            return Err("The gs:// path must end with a trailing slash");
+        }
 
-	return Ok((bucket.to_string(), Some(after_slash.to_string())))
+        return Ok((bucket.to_string(), Some(after_slash.to_string())));
     } else {
-	// Just a bucket name
-	return Ok((remainder.to_string(), None))
+        // Just a bucket name
+        return Ok((remainder.to_string(), None));
     }
 }
 
@@ -61,18 +61,26 @@ fn build_mount_options(option_strs: Vec<&str>) -> Result<Vec<MountOption>, &'sta
     options.push(MountOption::CUSTOM("noappledouble".into()));
 
     for option in option_strs {
-	match option {
-	    "auto_umount" => /* Already added */ (),
-	    "ro" => options.push(MountOption::RO),
-	    "rw" => options.push(MountOption::RW),
-	    "atime" => return Err("atime unsupported"),
-	    "noatime" => /* already added */ (),
-	    "dirsync" => options.push(MountOption::DirSync),
-	    "sync" => options.push(MountOption::Sync),
-	    "async" => options.push(MountOption::Async),
-	    // TODO(boulos): Handle UID / GID / allow_other, etc.
-	    _ => return Err("Unsupported option"),
-	}
+        match option {
+            "auto_umount" =>
+            /* Already added */
+            {
+                ()
+            }
+            "ro" => options.push(MountOption::RO),
+            "rw" => options.push(MountOption::RW),
+            "atime" => return Err("atime unsupported"),
+            "noatime" =>
+            /* already added */
+            {
+                ()
+            }
+            "dirsync" => options.push(MountOption::DirSync),
+            "sync" => options.push(MountOption::Sync),
+            "async" => options.push(MountOption::Async),
+            // TODO(boulos): Handle UID / GID / allow_other, etc.
+            _ => return Err("Unsupported option"),
+        }
     }
 
     // We could check that the options don't conflict / have repeats,

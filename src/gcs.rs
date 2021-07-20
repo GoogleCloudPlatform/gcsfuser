@@ -691,9 +691,7 @@ mod tests {
         let start_offset: u64 = 6;
         let want_bytes = &want_bytes[start_offset as usize..];
         let want_len = want_len - start_offset;
-        let got_bytes: Vec<u8> = get_bytes(&object, start_offset, want_len)
-            .await
-            .unwrap();
+        let got_bytes: Vec<u8> = get_bytes(&object, start_offset, want_len).await.unwrap();
         let got_len = got_bytes.len() as u64;
         assert_eq!(got_len, want_len);
         assert_eq!(got_bytes, want_bytes);
