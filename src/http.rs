@@ -251,14 +251,15 @@ mod tests {
         init();
 
         let mut handles = Vec::new();
+        let client = new_client();
 
         // Launch up to 1024 in parallel. This test sets worker_threads
         // = 64, to make sure we actually supply enough parallelism in
         // our tokio thread pool. NOTE(boulos): Changing this to 64
         // doesn't cause the unreliable / single shot code to fail.
         for i in 0..1000 {
+            let client = client.clone();
             handles.push(tokio::spawn(async move {
-                let client = new_client();
                 let base_url = "https://www.googleapis.com/storage/v1/b";
                 let bucket_url = format!("{}/{}/o", base_url, LANDSAT_BUCKET);
 
