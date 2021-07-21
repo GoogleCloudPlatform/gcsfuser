@@ -14,11 +14,10 @@ license = "Apache-2.0"
 unreliable = []
 
 [dependencies]
-bytes = "0.6"
+bytes = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "2" }
-dirs = "3.0"
-env_logger = "0.8"
+env_logger = "0.9"
 fuser = { version = "0.8", features = ["abi-7-30"] }
 futures = "0.3.8"
 http = "0.2"
@@ -27,17 +26,15 @@ hyper-rustls = "0.22.*"
 lazy_static = "1.4"
 libc = "0.2"
 log = "0.4"
-oauth2 = "2.0"
 openssl = "0.10"
 rand = { version = "0.8", features = [ "small_rng" ] }
 rayon = "1.5"
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
-serde_with = "1.6"
-tame-oauth = "0.4"
-tempdir = "0.3"
-tempfile = "3.1"
+serde_with = "1.9"
+tame-oauth = "0.5"
+tempfile = "3.2"
 time = "0.1"
 tokio = { version = "1.8", features = ["full"] }
 tracing = { version = "0.1", features = ["log"] }

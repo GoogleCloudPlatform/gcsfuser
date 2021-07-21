@@ -732,7 +732,6 @@ impl Filesystem for GCSFS {
 #[cfg(test)]
 mod tests {
     extern crate env_logger;
-    extern crate tempdir;
     extern crate tempfile;
 
     use super::*;
@@ -741,7 +740,6 @@ mod tests {
     use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::process::Command;
-    use tempdir::TempDir;
     use tempfile::NamedTempFile;
 
     const LANDSAT_SUBDIR: &str = "LC08_L1GT_044034_20130330_20170310_01_T2";
@@ -901,7 +899,11 @@ mod tests {
     fn just_mount<'a>() {
         init();
 
-        let dir = TempDir::new("just_mount").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("just_mount")
+            .tempdir()
+            .unwrap();
+
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = mount_tempdir_ro(mnt);
@@ -913,7 +915,11 @@ mod tests {
     fn mount_and_read<'a>() {
         init();
 
-        let dir = TempDir::new("mount_and_read").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("mount_and_read")
+            .tempdir()
+            .unwrap();
+
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = mount_tempdir_ro(mnt);
@@ -931,7 +937,11 @@ mod tests {
     fn large_read<'a>() {
         init();
 
-        let dir = TempDir::new("large_read").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("large_read")
+            .tempdir()
+            .unwrap();
+
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = mount_tempdir_ro(mnt);
@@ -961,7 +971,11 @@ mod tests {
     fn direct_read<'a>() {
         init();
 
-        let dir = TempDir::new("direct_read").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("direct_read")
+            .tempdir()
+            .unwrap();
+
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = mount_tempdir_ro(mnt);
@@ -992,7 +1006,11 @@ mod tests {
     fn small_write<'a>() {
         init();
 
-        let dir = TempDir::new("mount_and_write").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("mount_and_write")
+            .tempdir()
+            .unwrap();
+
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = mount_tempdir_rw(mnt);
@@ -1023,7 +1041,11 @@ mod tests {
     fn large_write<'a>() {
         init();
 
-        let dir = TempDir::new("large_write").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("large_write")
+            .tempdir()
+            .unwrap();
+
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = mount_tempdir_rw(mnt);
@@ -1093,7 +1115,11 @@ mod tests {
         // Mount the filesystem and run ls.
         info!("Running mount_and_ls");
 
-        let dir = TempDir::new("mount_and_ls").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("mount_and_ls")
+            .tempdir()
+            .unwrap();
+
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
 
@@ -1113,7 +1139,16 @@ mod tests {
     fn mount_and_cp<'a>() {
         init();
 
-        let dir = TempDir::new("mount_and_cp").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("mount_and_cp")
+            .tempdir()
+            .unwrap();
+
+        let output_dir = tempfile::Builder::new()
+            .prefix("mount_and_cp_output")
+            .tempdir()
+            .unwrap();
+
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = mount_tempdir_ro(mnt);
@@ -1123,11 +1158,7 @@ mod tests {
         let tif_file = LANDSAT_B7_TIF;
         let sub_dir = LANDSAT_SUBDIR;
         let full_path = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
-        let dst_path = format!(
-            "{}/{}",
-            dirs::home_dir().unwrap().to_str().unwrap(),
-            tif_file
-        );
+        let dst_path = format!("{}/{}", output_dir.path().to_str().unwrap(), tif_file);
 
         let stat_time = std::time::Instant::now();
         info!("Calling stat to trigger init");
@@ -1146,7 +1177,17 @@ mod tests {
     // This test also copies the whole 70MB file, but via dd.
     fn test_dd<'a>() {
         init();
-        let dir = TempDir::new("test_dd").unwrap();
+
+        let dir = tempfile::Builder::new()
+            .prefix("test_dd")
+            .tempdir()
+            .unwrap();
+
+        let output_dir = tempfile::Builder::new()
+            .prefix("test_dd_output")
+            .tempdir()
+            .unwrap();
+
         let mnt = dir.into_path();
         let mnt_str = String::from(mnt.to_str().unwrap());
         let daemon = mount_tempdir_ro(mnt);
@@ -1157,11 +1198,7 @@ mod tests {
         let sub_dir = LANDSAT_SUBDIR;
         let full_path = format!("{}/{}/{}", mnt_str, sub_dir, tif_file);
 
-        let dst_path = format!(
-            "{}/{}",
-            dirs::home_dir().unwrap().to_str().unwrap(),
-            tif_file
-        );
+        let dst_path = format!("{}/{}", output_dir.path().to_str().unwrap(), tif_file);
 
         let stat_time = std::time::Instant::now();
         info!("Calling stat to trigger init");
