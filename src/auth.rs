@@ -17,31 +17,13 @@ extern crate hyper;
 extern crate hyper_rustls;
 
 use lazy_static::lazy_static;
-use tame_oauth::gcp::prelude::*;
+use tame_oauth::gcp::*;
 
 use crate::errors::HttpError;
 
 lazy_static! {
-    static ref TOKEN_PROVIDER: Option<ServiceAccountAccess> = {
-    // Read in the usual key file.
-    let env_key = "GOOGLE_APPLICATION_CREDENTIALS";
-    let cred_env = std::env::var(env_key);
-    let cred_path = match cred_env {
-        Ok(path) => path,
-        Err(std::env::VarError::NotPresent) => {
-        info!("{} not set. Assuming public buckets", env_key);
-        return None
-        },
-        Err(error) => panic!("Invalid {}. Error {:?}", env_key, error)
-    };
-
-    debug!("Going to get GCP credentials from {}", cred_path);
-
-    let key_data = std::fs::read_to_string(cred_path).expect("failed to read credential file");
-    let acct_info = ServiceAccountInfo::deserialize(key_data).expect("failed to decode credential file");
-
-    Some(ServiceAccountAccess::new(acct_info).expect("failed to create OAuth Token Provider"))
-    };
+    static ref TOKEN_PROVIDER: Option<tame_oauth::gcp::TokenProviderWrapper> =
+        tame_oauth::gcp::TokenProviderWrapper::get_default_provider().expect("Failed to initialize Token Provider");
 }
 
 // Given an http::Request, actually issue it (via hyper), returning
@@ -49,8 +31,8 @@ lazy_static! {
 async fn do_http_request(
     request: http::Request<Vec<u8>>,
 ) -> Result<http::Response<Vec<u8>>, HttpError> {
-    // We only expect a POST.
-    assert_eq!(request.method(), http::Method::POST);
+    // We only expect a GET (metadata server) or POST (service account or end-user credential token).
+    assert!(request.method() == http::Method::POST || request.method() == http::Method::GET);
 
     let https = hyper_rustls::HttpsConnector::with_native_roots();
     let client = hyper::Client::builder().build::<_, hyper::Body>(https);

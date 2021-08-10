@@ -1185,9 +1185,9 @@ dependencies = [
 
 [[package]]
 name = "tame-oauth"
-version = "0.5.2"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bfe651bb448eaa624ff5965c163304f89bb8eb3254bd51374c87084a2e342b8"
+checksum = "c9f10b65b69ec38bae81508d888a23cec43fb61c89738b3c91d107d92982b049"
 dependencies = [
  "base64",
  "chrono",
