@@ -122,7 +122,8 @@ fn main() {
     // Both the path and mountpoint are required, so unwrap is fine.
     let gcs_path: String = matches.value_of("gcs_path").unwrap().to_string();
     let mountpoint: String = matches.value_of("mount_point").unwrap().to_string();
-    let option_strs = matches.values_of("options").unwrap().collect();
+    // Get the options, or an empty array.
+    let option_strs = matches.values_of("options").unwrap_or_default().collect();
 
     // Compute our bucket and optional prefix.
     let (bucket, prefix) = split_gcs_path(gcs_path).expect("Failed to parse gcs_path");
