@@ -269,7 +269,7 @@ mod tests {
                     .append_pair("prefix", LANDSAT_PREFIX);
                 list_url.query_pairs_mut().append_pair("delimiter", "/");
 
-                let uri: hyper::Uri = list_url.into_string().parse().unwrap();
+                let uri: hyper::Uri = String::from(list_url).parse().unwrap();
 
                 let body = hyper::Body::empty();
 

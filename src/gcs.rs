@@ -112,7 +112,7 @@ async fn get_object(url: Url) -> Result<Object, HttpError> {
     debug!("Looking to request: {:#?}", url);
 
     let client = new_client();
-    let uri: hyper::Uri = url.into_string().parse()?;
+    let uri: hyper::Uri = String::from(url).parse()?;
     let body = hyper::Body::empty();
 
     let mut builder = hyper::Request::builder().uri(uri);
@@ -123,6 +123,97 @@ async fn get_object(url: Url) -> Result<Object, HttpError> {
     let object: Object = serde_json::from_slice(&bytes).unwrap();
     debug!("{:#?}", object);
     Ok(object)
+}
+
+#[allow(dead_code)]
+// compose_objects isn't (yet) used by fs, but I don't want to mark it test only.
+async fn compose_objects_with_client(
+    client: &GcsHttpClient,
+    src1: &Object,
+    src2: &Object,
+    bucket: &str,
+    name: &str,
+) -> Result<Object, HttpError> {
+    debug!(
+        "Going to compose two objects {:#?} and {:#?} into {} in bucket {}",
+        src1, src2, name, bucket
+    );
+
+    // https://cloud.google.com/storage/docs/json_api/v1/objects/compose#http-request
+    let base_url = "https://storage.googleapis.com/storage/v1/b";
+    let full_url = format!(
+        "{base_url}/{bucket}/o/{destination_object}/compose",
+        base_url = base_url,
+        bucket = bucket,
+        destination_object = name
+    );
+
+    let mut compose_url = Url::parse(&full_url).unwrap();
+
+    let generation_str = format!("{}", src1.generation);
+    let metageneration_str = format!("{}", src1.metageneration);
+
+    // If the destination is the same, add an ifGenerationMatch to
+    // protect the overwrite. NOTE(boulos): compose is all within a
+    // single bucket, so we don't have to validate that here (GCS will
+    // do it for us).
+    if src1.name == name {
+        compose_url
+            .query_pairs_mut()
+            .append_pair("ifGenerationMatch", &generation_str);
+        compose_url
+            .query_pairs_mut()
+            .append_pair("ifMetagenerationMatch", &metageneration_str);
+    }
+
+    // Make a Compose Request
+    // (https://cloud.google.com/storage/docs/json_api/v1/objects/compose#request-body). The
+    // destination Object just needs the "name" field.
+    let req_json = serde_json::json!({
+    "kind": "storage#composeRequest",
+    "destination": {
+        "name": name
+    },
+    "sourceObjects": [
+        {
+        "name": src1.name,
+        "generation": src1.generation,
+        "objectPreconditions": {
+            "ifGenerationMatch": src1.generation,
+            // TODO(boulos): Can these also take metageneration?
+        }
+        },
+        {
+        "name": src2.name,
+        "generation": src2.generation,
+        "objectPreconditions": {
+            "ifGenerationMatch": src2.generation,
+        }
+        }
+    ]
+    });
+
+    let uri: hyper::Uri = String::from(compose_url).parse()?;
+
+    let mut builder = hyper::Request::builder()
+        .method(hyper::Method::POST)
+        .uri(uri)
+        .header(http::header::CONTENT_TYPE, "application/json");
+
+    add_auth_header(&mut builder).await?;
+
+    let request = builder
+        .body(hyper::Body::from(req_json.to_string()))
+        .expect("Failed to construct compose request");
+
+    debug!("{:#?}", request);
+
+    let bytes = do_gcs_request(client, request).await?;
+
+    let compose_response: Object = serde_json::from_slice(&bytes).unwrap();
+    debug!("{:#?}", compose_response);
+
+    Ok(compose_response)
 }
 
 #[allow(dead_code)]
@@ -176,7 +267,7 @@ pub async fn get_bytes_with_client(
 
     let now = std::time::Instant::now();
 
-    let uri: hyper::Uri = object_url.into_string().parse()?;
+    let uri: hyper::Uri = String::from(object_url).parse()?;
 
     let body = hyper::Body::empty();
 
@@ -512,7 +603,7 @@ async fn _do_one_list_object(
             .append_pair("pageToken", token_str);
     }
 
-    let uri: hyper::Uri = list_url.into_string().parse()?;
+    let uri: hyper::Uri = String::from(list_url).parse()?;
 
     let mut builder = http::Request::builder().uri(uri);
     add_auth_header(&mut builder).await?;
@@ -621,17 +712,19 @@ mod tests {
         landsat_obj_url(&object_str)
     }
 
-    async fn put_object(bucket: &str, name: &str, media: &[u8]) {
+    async fn put_object(bucket: &str, name: &str, media: &[u8]) -> Result<Object, HttpError> {
+        // Make a client.
         let client = &new_client();
+        // Then start the object.
         let mut object_cursor = create_object_with_client(client, bucket, name)
             .await
             .unwrap();
+        // Send the bytes.
         append_bytes_with_client(client, &mut object_cursor, media)
             .await
             .unwrap();
-        finalize_upload_with_client(client, &mut object_cursor)
-            .await
-            .unwrap();
+        // Then finalize and get our Result.
+        finalize_upload_with_client(client, &mut object_cursor).await
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -667,7 +760,7 @@ mod tests {
             .map(char::from)
             .collect();
         let want_bytes = want_string.into_bytes();
-        put_object(&private_bucket, &want_name, &want_bytes.to_owned()).await;
+        let _ = put_object(&private_bucket, &want_name, &want_bytes.to_owned()).await;
 
         // test getting the private object
         let url = format!(
@@ -974,5 +1067,104 @@ mod tests {
         println!("Got {} objects", objects.len());
         println!("prefixes: {:#?}", prefixes);
         println!("objects: {:#?}", all_objects);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn basic_compose() {
+        init();
+
+        let client = new_client();
+
+        let bucket_str = test_bucket();
+
+        let src1_name = "src1.txt";
+        let src2_name = "src2.txt";
+        let dst_name = "dst.txt";
+
+        let src1_data = "Hello, ";
+        let src2_data = "world!";
+
+        let combo = format!("{}{}", src1_data, src2_data);
+
+        let obj1: Object = put_object(&bucket_str, &src1_name, src1_data.as_bytes())
+            .await
+            .unwrap();
+        let obj2: Object = put_object(&bucket_str, &src2_name, src2_data.as_bytes())
+            .await
+            .unwrap();
+
+        let dst: Object =
+            compose_objects_with_client(&client, &obj1, &obj2, &bucket_str, &dst_name)
+                .await
+                .unwrap();
+
+        println!("Composed {:#?}", dst);
+
+        // Make sure the size matches.
+        assert_eq!(dst.size, combo.len() as u64);
+
+        // Then see if the bytes match.
+        let bytes: Vec<u8> = get_bytes(&dst, 0, combo.len() as u64).await.unwrap();
+        assert_eq!(bytes, combo.as_bytes());
+    }
+
+    // Similar to above, but use compose for append (dst == src1.name).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compose_append() {
+        init();
+
+        let client = new_client();
+
+        let bucket_str = test_bucket();
+
+        let src1_name = "append.txt";
+        let src2_name = "append2.txt";
+        let dst_name = src1_name;
+
+        let src1_data = "Hello, ";
+        let src2_data = "world!";
+
+        let combo = format!("{}{}", src1_data, src2_data);
+
+        let obj1: Object = put_object(&bucket_str, &src1_name, src1_data.as_bytes())
+            .await
+            .unwrap();
+        let obj2: Object = put_object(&bucket_str, &src2_name, src2_data.as_bytes())
+            .await
+            .unwrap();
+
+        let dst: Object =
+            compose_objects_with_client(&client, &obj1, &obj2, &bucket_str, &dst_name)
+                .await
+                .unwrap();
+
+        println!("Composed {:#?}", dst);
+
+        // Make sure the size matches.
+        assert_eq!(dst.size, combo.len() as u64);
+
+        // Then see if the bytes match.
+        let bytes: Vec<u8> = get_bytes(&dst, 0, combo.len() as u64).await.unwrap();
+        assert_eq!(bytes, combo.as_bytes());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compose_cross_bucket_fails() {
+        init();
+
+        let client = new_client();
+        let bucket_str = test_bucket();
+
+        // Get the small landsat object
+        let input: Object = get_object(landsat_small_obj_url()).await.unwrap();
+
+        // And then try to concat it into out bucket.
+        let dst_name = "compose_cross.txt";
+
+        let dst =
+            compose_objects_with_client(&client, &input, &input, &bucket_str, &dst_name).await;
+
+        // We should have gotten an error.
+        assert_eq!(dst.is_err(), true);
     }
 }

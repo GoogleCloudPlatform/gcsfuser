@@ -23,7 +23,8 @@ use crate::errors::HttpError;
 
 lazy_static! {
     static ref TOKEN_PROVIDER: Option<tame_oauth::gcp::TokenProviderWrapper> =
-        tame_oauth::gcp::TokenProviderWrapper::get_default_provider().expect("Failed to initialize Token Provider");
+        tame_oauth::gcp::TokenProviderWrapper::get_default_provider()
+            .expect("Failed to initialize Token Provider");
 }
 
 // Given an http::Request, actually issue it (via hyper), returning
