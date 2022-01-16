@@ -16,7 +16,8 @@ unreliable = []
 [dependencies]
 bytes = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "2" }
+# Include the cargo feature for clap, to get crate_version!
+clap = { version = "3", features = ["cargo"] }
 env_logger = "0.9"
 fuser = { version = "0.8", features = ["abi-7-30"] }
 futures = "0.3.8"

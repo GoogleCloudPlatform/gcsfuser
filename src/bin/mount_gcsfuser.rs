@@ -96,22 +96,22 @@ fn main() {
         .version(crate_version!())
         .author("Solomon Boulos")
         .arg(
-            Arg::with_name("gcs_path")
+            Arg::new("gcs_path")
 		// Make
                 .required(true)
                 .takes_value(true)
                 .help("GCS path to mount. Either the bucket name (e.g., gcp-public-data-landsat) or a gs://bucket/path string")
         )
         .arg(
-            Arg::with_name("mount_point")
+            Arg::new("mount_point")
                 .required(true)
                 .takes_value(true)
                 .help("Local path for the mount point")
         )
 	// TODO(boulos): Handle this as -o parsing.
         .arg(
-            Arg::with_name("options")
-		.short("o")
+            Arg::new("options")
+		.short('o')
 		.use_delimiter(true)
                 .required(false)
                 .takes_value(true)
